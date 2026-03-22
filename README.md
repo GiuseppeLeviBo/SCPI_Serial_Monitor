@@ -7,10 +7,9 @@
 
 Whether you are controlling a professional oscilloscope, a bench multimeter, or debugging a custom Arduino-based SCPI instrument, this tool provides a clean GUI, macro management, and asynchronous reading across multiple communication protocols.
 
-> **[📝 NOTE]** 
-> *Add a screenshot of your application here! Just replace the path below:*
-> 
-> ![Example screenshot](Screenshot.png)
+
+
+ ![Example screenshot](Screenshot.png)
 
 
 ## ✨ Features
