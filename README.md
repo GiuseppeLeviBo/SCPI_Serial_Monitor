@@ -10,7 +10,8 @@ Whether you are controlling a professional oscilloscope, a bench multimeter, or 
 > **[📝 NOTE]** 
 > *Add a screenshot of your application here! Just replace the path below:*
 > 
-> `![App Screenshot](screenshot.png)`
+> ![Example screenshot](Screenshot.png)
+
 
 ## ✨ Features
 
