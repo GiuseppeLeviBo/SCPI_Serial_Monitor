@@ -39,15 +39,15 @@ Depending on the protocols you plan to use, you will need the following Python p
 ## 🚀 Installation & Usage
 
 1. **Clone the repository:**
-       git clone https://github.com/yourusername/scpi-serial-monitor.git
-       cd scpi-serial-monitor
+       git clone https://github.com/GiuseppeLeviBo/SCPI_Serial_Monitor.git
+       cd SCPI_Serial_Monitorr
 
-2. **Install dependencies:**
+1. **Install dependencies:**
        pip install -r requirements.txt
 
    *(Note: Linux users might need to install Tkinter via their package manager, e.g., `sudo apt-get install python3-tk`).*
 
-3. **Run the application:**
+2. **Run the application:**
        python SCPI_serial_monitor.py
    
 ## 📖 How it Works
