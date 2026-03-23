@@ -32,6 +32,14 @@ RECENTS_FILE = Path.home() / ".scpi_monitor_recents.json"
 MAX_RECENTS = 12
 
 
+def is_query_command(command: str) -> bool:
+    stripped = command.strip()
+    if not stripped:
+        return False
+    keyword = stripped.split(maxsplit=1)[0]
+    return "?" in keyword
+
+
 @dataclass
 class Macro:
     name: str
@@ -640,7 +648,7 @@ class App(tk.Tk):
                 with self.io_lock:
                     for cmd in macro.commands:
                         self.rx_queue.put(("TX", cmd))
-                        if cmd.endswith("?"):
+                        if is_query_command(cmd):
                             reply = self.transport.query(cmd)
                             self.rx_queue.put(("RX", reply))
                         else:
@@ -976,7 +984,7 @@ class App(tk.Tk):
         def worker():
             try:
                 with self.io_lock:
-                    expect_reply = force_query or cmd.endswith("?")
+                    expect_reply = force_query or is_query_command(cmd)
                     if expect_reply:
                         reply = self.transport.query(cmd)
                         self.rx_queue.put(("RX", reply))
