@@ -29,3 +29,44 @@ Whether you are controlling a professional oscilloscope, a bench multimeter, or 
 The application relies on Python's built-in `tkinter` for the GUI.
 Depending on the protocols you plan to use, you will need the following Python packages:
 
+Depending on the protocols you plan to use, you will need the following Python packages:
+
+    pyserial>=3.5     # Required for Serial communication
+    pyvisa>=1.13.0    # Required for VISA communication
+
+*Note for VISA users: To use the `ni` backend, ensure you have the [NI-VISA Runtime](https://www.ni.com/en/support/downloads/software-products/download.ni-visa.html) installed on your system.*
+
+## 🚀 Installation & Usage
+
+1. **Clone the repository:**
+       git clone https://github.com/yourusername/scpi-serial-monitor.git
+       cd scpi-serial-monitor
+
+2. **Install dependencies:**
+       pip install -r requirements.txt
+
+   *(Note: Linux users might need to install Tkinter via their package manager, e.g., `sudo apt-get install python3-tk`).*
+
+3. **Run the application:**
+       python SCPI_serial_monitor.py
+   
+## 📖 How it Works
+
+### Sending Commands
+Type your SCPI command in the bottom input field and press `Enter` or click **Invia**. 
+- If the command ends with a `?` (e.g., `*IDN?`), the app will automatically treat it as a Query, waiting for a response and displaying it in the log.
+- You can force a Query for commands that don't end in `?` by clicking the **Query** button.
+
+### Macros
+Macros allow you to automate testing sequences. 
+- Click **Nuova** to open the Macro Editor. 
+- Write one command per line. 
+- During execution, the application will pause for `0.1s` after standard write commands to allow slow instruments (like custom Arduino boards) to process the data, while it will actively wait for responses for query commands (`?`).
+- You can Export/Import Macros to share them across different setups.
+
+### Technical Detail: Thread Safety
+When interfacing with embedded devices, an active background reader thread can accidentally "steal" bytes meant for a synchronous `query()`. This application solves this by wrapping I/O operations and the background reader loop in a `threading.Lock()`. This guarantees that when a query is sent, the UI waits safely, the background reader is paused, and the instrument's response is captured correctly without data corruption.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
