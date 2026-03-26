@@ -67,6 +67,29 @@ Macros allow you to automate testing sequences.
 ### Technical Detail: Thread Safety
 When interfacing with embedded devices, an active background reader thread can accidentally "steal" bytes meant for a synchronous `query()`. This application solves this by wrapping I/O operations and the background reader loop in a `threading.Lock()`. This guarantees that when a query is sent, the UI waits safely, the background reader is paused, and the instrument's response is captured correctly without data corruption.
 
+
+## 🧩 Combined Monitor (NEW)
+
+Ora il repository include anche `SCPI_combined_monitor.py`, un monitor ibrido che unisce:
+- la logica di monitor live del serial monitor,
+- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`).
+
+Avvio rapido:
+
+```bash
+python SCPI_combined_monitor.py
+```
+
+Esempio script:
+
+```text
+@conn gen serial COM3 115200
+@target gen
+*IDN?
+MEAS:VOLT?
+@if last < 1 @halt
+```
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
