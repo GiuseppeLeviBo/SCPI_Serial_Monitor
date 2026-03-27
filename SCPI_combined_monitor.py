@@ -1,9 +1,12 @@
+import json
 import threading
 import time
 import tkinter as tk
 import re
 from dataclasses import dataclass
-from tkinter import ttk, messagebox
+from datetime import datetime
+from pathlib import Path
+from tkinter import ttk, messagebox, simpledialog
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable, Dict, List, Optional
 
@@ -15,6 +18,8 @@ from SCPI_serial_monitor import (
 )
 
 APP_NAME = "SCPI Combined Monitor"
+SCRIPT_INDEX_FILE = Path.home() / ".scpi_combined_scripts.json"
+SCRIPT_DIR = Path.home() / ".scpi_macros"
 
 
 @dataclass
@@ -275,7 +280,10 @@ class CombinedMonitorApp(tk.Tk):
         self.engine = CombinedScriptEngine(self._append_log, self._add_conn_history_entry)
         self.run_thread: Optional[threading.Thread] = None
         self.running = False
+        self.script_name: Optional[str] = None
+        self.script_index: Dict[str, str] = {}
 
+        self._load_script_index()
         self._build_ui()
 
     def _build_ui(self):
@@ -308,6 +316,9 @@ class CombinedMonitorApp(tk.Tk):
         self.btn_run.pack(side="left", padx=(0, 4))
         self.btn_stop = ttk.Button(actions, text="Stop", command=self.request_stop)
         self.btn_stop.pack(side="left")
+        ttk.Button(actions, text="Carica Script", command=self.load_script).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Salva Script", command=self.save_script).pack(side="left", padx=(4, 0))
+        ttk.Button(actions, text="Salva Come…", command=self.save_script_as).pack(side="left", padx=(4, 0))
         ttk.Button(actions, text="Chiudi Connessioni", command=self.close_connections).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Pulisci Log", command=self.clear_log).pack(side="right")
 
@@ -321,6 +332,110 @@ class CombinedMonitorApp(tk.Tk):
         self.conn_history_list = tk.Listbox(conn_hist, height=6)
         self.conn_history_list.pack(fill="both", expand=True)
         self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
+
+    @staticmethod
+    def _normalize_script_name(name: str) -> str:
+        return re.sub(r"\s+", " ", name).strip()
+
+    @staticmethod
+    def _script_filename_from_name(name: str) -> str:
+        safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", name).strip("_")
+        if not safe:
+            safe = "script"
+        return f"{safe}.scpi"
+
+    def _load_script_index(self):
+        SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+        self.script_index = {}
+        if not SCRIPT_INDEX_FILE.exists():
+            return
+        try:
+            raw = json.loads(SCRIPT_INDEX_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                scripts = raw.get("scripts", raw)
+                if isinstance(scripts, dict):
+                    for name, rel_path in scripts.items():
+                        if isinstance(name, str) and isinstance(rel_path, str):
+                            self.script_index[self._normalize_script_name(name)] = rel_path
+        except Exception as exc:
+            # In caso di indice corrotto non blocchiamo l'app.
+            print(f"[WARN] Impossibile caricare indice script: {exc}")
+
+    def _save_script_index(self):
+        payload = {
+            "scripts": dict(sorted(self.script_index.items(), key=lambda kv: kv[0].lower())),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "storage_dir": str(SCRIPT_DIR),
+        }
+        SCRIPT_INDEX_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _script_path_from_name(self, name: str) -> Path:
+        rel_path = self.script_index.get(name)
+        if rel_path:
+            return SCRIPT_DIR / rel_path
+        return SCRIPT_DIR / self._script_filename_from_name(name)
+
+    def load_script(self):
+        if not self.script_index:
+            messagebox.showinfo(APP_NAME, "Nessuno script salvato nell'indice JSON.")
+            return
+
+        names = sorted(self.script_index.keys(), key=str.lower)
+        selected_name = simpledialog.askstring(
+            APP_NAME,
+            "Nome script da caricare:\n" + "\n".join(f"- {name}" for name in names[:20]),
+            parent=self,
+        )
+        if not selected_name:
+            return
+
+        normalized_name = self._normalize_script_name(selected_name)
+        if normalized_name not in self.script_index:
+            messagebox.showerror(APP_NAME, f"Script '{normalized_name}' non presente nell'indice.")
+            return
+
+        path = self._script_path_from_name(normalized_name)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile caricare lo script:\n{exc}")
+            return
+
+        self.script_text.delete("1.0", "end")
+        self.script_text.insert("1.0", content)
+        self.script_name = normalized_name
+        self._append_log("INFO", f"Script caricato: {normalized_name} ({path})")
+
+    def save_script(self):
+        if not self.script_name:
+            self.save_script_as()
+            return
+
+        self._save_script_by_name(self.script_name)
+
+    def save_script_as(self):
+        proposed = self.script_name or ""
+        name = simpledialog.askstring(APP_NAME, "Nome script:", initialvalue=proposed, parent=self)
+        if not name:
+            return
+        normalized_name = self._normalize_script_name(name)
+        if not normalized_name:
+            messagebox.showwarning(APP_NAME, "Il nome script non può essere vuoto.")
+            return
+        self.script_name = normalized_name
+        self._save_script_by_name(normalized_name)
+
+    def _save_script_by_name(self, name: str):
+        filename = self._script_filename_from_name(name)
+        self.script_index[name] = filename
+        path = self._script_path_from_name(name)
+        try:
+            content = self.script_text.get("1.0", "end-1c")
+            path.write_text(content, encoding="utf-8")
+            self._save_script_index()
+            self._append_log("INFO", f"Script salvato: {name} ({path})")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile salvare lo script:\n{exc}")
 
     def _append_log(self, level: str, msg: str):
         self.log.configure(state="normal")
