@@ -1,5 +1,6 @@
 import json
 import queue
+import re
 import socket
 import threading
 import time
@@ -334,7 +335,7 @@ class App(tk.Tk):
 
         ttk.Label(param_frame, text="Seriale:").pack(side="left")
         self.serial_port = tk.StringVar()
-        self.serial_combo = ttk.Combobox(param_frame, textvariable=self.serial_port, width=15)
+        self.serial_combo = ttk.Combobox(param_frame, textvariable=self.serial_port, width=22, state="normal")
         self.serial_combo.pack(side="left", padx=(4, 2))
         self.btn_refresh = ttk.Button(param_frame, text="↻", command=self._refresh_ports, width=3)
         self.btn_refresh.pack(side="left", padx=(0, 15))
@@ -452,7 +453,7 @@ class App(tk.Tk):
             self.conn_box.state(["disabled"])
             self.timeout_entry.state(["disabled"])
             self.terminator_entry.state(["disabled"])
-            self.serial_combo.state(["disabled"])
+            self.serial_combo.configure(state="disabled")
             self.baud_entry.state(["disabled"])
             self.visa_entry.state(["disabled"])
             self.visa_backend_combo.state(["disabled"])
@@ -484,7 +485,7 @@ class App(tk.Tk):
             return
 
         mode = self.conn_type.get()
-        self.serial_combo.state(["disabled"])
+        self.serial_combo.configure(state="disabled")
         self.baud_entry.state(["disabled"])
         self.visa_entry.state(["disabled"])
         self.visa_backend_combo.state(["disabled"])
@@ -492,9 +493,9 @@ class App(tk.Tk):
         self.socket_port_entry.state(["disabled"])
 
         if mode == "serial":
-            available_ports = tuple(self.serial_combo.cget("values"))
-            serial_combo_state = "readonly" if list_ports and available_ports else "!disabled"
-            self.serial_combo.state([serial_combo_state])
+            # Campo editabile: permette inserimento manuale su SO dove la rilevazione non funziona.
+            # La tendina continua a mostrare tutte le porte rilevate.
+            self.serial_combo.configure(state="normal")
             self.baud_entry.state(["!disabled"])
         elif mode == "visa":
             self.visa_entry.state(["!disabled"])
@@ -522,8 +523,11 @@ class App(tk.Tk):
         if list_ports is not None:
             ports = [p.device for p in list_ports.comports()]
         self.serial_combo["values"] = ports
-        if ports and self.serial_port.get() not in ports:
+
+        current = self.serial_port.get().strip()
+        if not current and ports:
             self.serial_port.set(ports[0])
+
         self._update_connection_fields()
 
     def _append_log(self, text: str, kind: str = "INFO"):
@@ -822,6 +826,35 @@ class App(tk.Tk):
         }
         SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    @staticmethod
+    def _escape_for_script(value: str) -> str:
+        return value.encode("unicode_escape").decode("ascii")
+
+    @staticmethod
+    def _suggest_target_name(mode: str, endpoint: str) -> str:
+        base = re.sub(r"[^a-zA-Z0-9_]+", "_", endpoint.strip()).strip("_")
+        if not base:
+            base = f"{mode}_dev"
+        if base[0].isdigit():
+            base = f"dev_{base}"
+        return base.lower()
+
+    def _build_conn_history_command(self, mode: str, timeout: float, terminator: str) -> str:
+        escaped_term = self._escape_for_script(terminator)
+        if mode == "serial":
+            endpoint = self.serial_port.get().strip()
+            target = self._suggest_target_name(mode, endpoint)
+            return f"@conn {target} serial {endpoint} {self.baudrate.get().strip()} {timeout:g} {escaped_term}"
+        if mode == "visa":
+            endpoint = self.visa_resource.get().strip()
+            target = self._suggest_target_name(mode, endpoint)
+            return f"@conn {target} visa {endpoint} {timeout:g} {self.visa_backend.get().strip()} {escaped_term}"
+
+        host = self.socket_host.get().strip()
+        port = self.socket_port.get().strip()
+        target = self._suggest_target_name(mode, host)
+        return f"@conn {target} socket {host}:{port} {timeout:g} {escaped_term}"
+
     # --- HISTORY E INPUT ---
     def _push_history(self, cmd: str):
         if not cmd:
@@ -938,6 +971,7 @@ class App(tk.Tk):
             self.transport.connect()
             self._set_status(f"Connesso via {mode.upper()}")
             self._append_log(f"Connessione aperta ({mode.upper()})", "INFO")
+            self._push_history(self._build_conn_history_command(mode, timeout, term))
             self._save_settings()
             self._store_recent_connection()
 
