@@ -221,6 +221,21 @@ class VisaTransport(TransportBase):
         except pyvisa.errors.VisaIOError as e:
             raise TimeoutError(f"Errore di IO VISA (Timeout?): {e.description}")
 
+    def read_available(self) -> Optional[str]:
+        if self.inst is None:
+            return None
+        original_timeout = self.inst.timeout
+        try:
+            # Lettura non bloccante best-effort per drenare eventuale output residuo.
+            self.inst.timeout = 1
+            try:
+                data = self.inst.read()
+            except pyvisa.errors.VisaIOError:
+                return None
+            return data if data else None
+        finally:
+            self.inst.timeout = original_timeout
+
     @property
     def is_connected(self) -> bool:
         return self.inst is not None
@@ -271,6 +286,27 @@ class RawSocketScpiTransport(TransportBase):
             raise TimeoutError("Nessuna risposta ricevuta dal socket (Timeout).")
             
         return b"".join(chunks).decode("utf-8", errors="replace").rstrip("\r\n")
+
+    def read_available(self) -> Optional[str]:
+        if self.sock is None:
+            return None
+        chunks = []
+        original_timeout = self.sock.gettimeout()
+        try:
+            self.sock.setblocking(False)
+            while True:
+                try:
+                    chunk = self.sock.recv(4096)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            self.sock.settimeout(original_timeout)
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", errors="replace")
 
     @property
     def is_connected(self) -> bool:

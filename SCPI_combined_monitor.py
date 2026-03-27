@@ -253,11 +253,15 @@ class CombinedScriptEngine:
         self.logger("TX", f"[{self.current_target}] {cmd}")
 
         if is_query_command(cmd):
-            if self.serial_pre_query_flush and isinstance(transport, SerialTransport):
+            if self.serial_pre_query_flush:
                 # Evita che eventuali reply residue (es. "OK" da un comando non-query precedente)
                 # vengano lette come risposta della query corrente.
-                with contextlib.suppress(Exception):
-                    transport.ser.reset_input_buffer()
+                if isinstance(transport, SerialTransport):
+                    with contextlib.suppress(Exception):
+                        transport.ser.reset_input_buffer()
+                else:
+                    with contextlib.suppress(Exception):
+                        _ = transport.read_available()
             try:
                 reply = transport.query(cmd)
             except TimeoutError:
