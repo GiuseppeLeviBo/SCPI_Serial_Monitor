@@ -85,6 +85,7 @@ Esempio script:
 ```text
 @conn gen serial COM3 115200
 @target gen
+@wait 1
 *IDN?
 MEAS:VOLT?
 @if last < 1 @halt
@@ -124,6 +125,7 @@ Seleziona il target attivo su cui inviare i comandi SCPI successivi.
 Esempio:
 ```text
 @target gen
+@wait 1
 *IDN?
 ```
 
@@ -169,6 +171,7 @@ Ferma l'esecuzione dello script.
 ### Note utili
 
 - Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
+- Nel Combined Monitor, se una query seriale va in timeout, viene effettuato automaticamente un retry dopo 1s.
 - Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
 
 ## 📄 License
