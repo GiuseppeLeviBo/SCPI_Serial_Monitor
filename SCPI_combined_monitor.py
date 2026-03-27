@@ -7,7 +7,7 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable, Dict, List, Optional
 
@@ -387,25 +387,98 @@ class CombinedMonitorApp(tk.Tk):
         return SCRIPT_DIR / self._script_filename_from_name(name)
 
     def load_script(self):
-        if not self.script_index:
-            messagebox.showinfo(APP_NAME, "Nessuno script salvato nell'indice JSON.")
+        selected_name = self._choose_script_from_index_dialog()
+        if selected_name == "__open_other__":
+            self._open_script_with_file_dialog()
             return
-
-        names = sorted(self.script_index.keys(), key=str.lower)
-        selected_name = simpledialog.askstring(
-            APP_NAME,
-            "Nome script da caricare:\n" + "\n".join(f"- {name}" for name in names[:20]),
-            parent=self,
-        )
         if not selected_name:
             return
 
-        normalized_name = self._normalize_script_name(selected_name)
+        self._load_script_by_name(selected_name)
+
+    def _choose_script_from_index_dialog(self) -> Optional[str]:
+        names = sorted(self.script_index.keys(), key=str.lower)
+        dialog = tk.Toplevel(self)
+        dialog.title("Carica Script")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(True, True)
+        dialog.geometry("560x420")
+
+        result = {"value": None}
+
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Script presenti nell'indice JSON:").pack(anchor="w", pady=(0, 6))
+
+        listbox = tk.Listbox(frame, height=14)
+        listbox.pack(fill="both", expand=True)
+        for name in names:
+            listbox.insert("end", name)
+
+        if names:
+            listbox.selection_set(0)
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=(8, 0))
+
+        def choose_selected(_event=None):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            result["value"] = listbox.get(selection[0])
+            dialog.destroy()
+
+        def choose_open_other():
+            result["value"] = "__open_other__"
+            dialog.destroy()
+
+        ttk.Button(btns, text="Apri selezionato", command=choose_selected).pack(side="left")
+        ttk.Button(btns, text="Apri altro...", command=choose_open_other).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="Annulla", command=dialog.destroy).pack(side="right")
+
+        listbox.bind("<Double-1>", choose_selected)
+        dialog.bind("<Return>", choose_selected)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self.wait_window(dialog)
+        return result["value"]
+
+    def _open_script_with_file_dialog(self):
+        selected_file = filedialog.askopenfilename(
+            parent=self,
+            title="Apri file script",
+            filetypes=[
+                ("Script SCPI", "*.scpi"),
+                ("JSON", "*.json"),
+                ("Testo", "*.txt"),
+                ("Tutti i file", "*.*"),
+            ],
+            initialdir=str(SCRIPT_DIR),
+        )
+        if not selected_file:
+            return
+
+        path = Path(selected_file)
+        self._load_script_from_path(path)
+
+        inferred_name = self._normalize_script_name(path.stem)
+        if inferred_name and path.is_relative_to(SCRIPT_DIR):
+            self.script_index[inferred_name] = path.name
+            self.script_name = inferred_name
+            self._save_script_index()
+
+    def _load_script_by_name(self, name: str):
+        normalized_name = self._normalize_script_name(name)
         if normalized_name not in self.script_index:
             messagebox.showerror(APP_NAME, f"Script '{normalized_name}' non presente nell'indice.")
             return
 
         path = self._script_path_from_name(normalized_name)
+        self._load_script_from_path(path, normalized_name)
+
+    def _load_script_from_path(self, path: Path, script_name: Optional[str] = None):
         try:
             content = path.read_text(encoding="utf-8")
         except Exception as exc:
@@ -414,8 +487,8 @@ class CombinedMonitorApp(tk.Tk):
 
         self.script_text.delete("1.0", "end")
         self.script_text.insert("1.0", content)
-        self.script_name = normalized_name
-        self._append_log("INFO", f"Script caricato: {normalized_name} ({path})")
+        self.script_name = script_name or self._normalize_script_name(path.stem)
+        self._append_log("INFO", f"Script caricato: {self.script_name} ({path})")
 
     def save_script(self):
         if not self.script_name:
