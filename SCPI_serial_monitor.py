@@ -108,11 +108,28 @@ class SerialTransport(TransportBase):
         self.ser.flush()
 
     def query(self, data: str) -> str:
-        self.write(data)
-        reply = self.ser.readline()
-        if not reply:
-            raise TimeoutError("Nessuna risposta dal dispositivo (Timeout).")
-        return reply.decode("utf-8", errors="replace").rstrip("\r\n")
+        last_reply = b""
+        for attempt in range(2):
+            self.write(data)
+            reply = self.ser.readline()
+
+            if not reply:
+                # Alcuni device seriali non inviano '\n': prova a leggere ciò che c'è nel buffer.
+                waiting = getattr(self.ser, "in_waiting", 0)
+                if waiting:
+                    reply = self.ser.read(waiting)
+
+            if reply:
+                return reply.decode("utf-8", errors="replace").rstrip("\r\n")
+
+            last_reply = reply or b""
+            if attempt == 0:
+                # Primo timeout: piccola attesa e retry (utile per device che si inizializzano dopo open).
+                time.sleep(min(0.2, max(self.timeout, 0.0)))
+
+        if last_reply:
+            return last_reply.decode("utf-8", errors="replace").rstrip("\r\n")
+        raise TimeoutError("Nessuna risposta dal dispositivo (Timeout).")
 
     def read_available(self) -> Optional[str]:
         if self.ser is None or not self.ser.is_open:

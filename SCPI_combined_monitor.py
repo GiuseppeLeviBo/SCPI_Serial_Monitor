@@ -34,6 +34,7 @@ class CombinedScriptEngine:
         self.last: Optional[str] = None
         self.last_command: Optional[str] = None
         self.stop_requested = False
+        self.serial_query_retry_delay_s = 1.0
 
     def reset_runtime(self):
         self.current_target = None
@@ -245,7 +246,17 @@ class CombinedScriptEngine:
         self.logger("TX", f"[{self.current_target}] {cmd}")
 
         if is_query_command(cmd):
-            reply = transport.query(cmd)
+            try:
+                reply = transport.query(cmd)
+            except TimeoutError:
+                if not isinstance(transport, SerialTransport):
+                    raise
+                self.logger(
+                    "WARN",
+                    f"[{self.current_target}] Timeout query seriale: retry tra {self.serial_query_retry_delay_s:g}s",
+                )
+                time.sleep(self.serial_query_retry_delay_s)
+                reply = transport.query(cmd)
             self.last = reply
             self.logger("RX", f"[{self.current_target}] {reply}")
         else:
