@@ -1,6 +1,7 @@
 import threading
 import time
 import tkinter as tk
+import re
 from dataclasses import dataclass
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -356,7 +357,13 @@ class CombinedMonitorApp(tk.Tk):
         if self.running:
             return
 
-        lines = self.script_text.get("1.0", "end").splitlines()
+        raw_script = self.script_text.get("1.0", "end")
+        normalized_script = re.sub(r"\\n(?=\s*[@*A-Za-z])", "\n", raw_script)
+        lines = normalized_script.splitlines()
+
+        if normalized_script != raw_script:
+            self._append_log("INFO", "Rilevate sequenze \\n nel testo: convertite in nuove righe")
+
         self._set_running(True)
 
         def worker():

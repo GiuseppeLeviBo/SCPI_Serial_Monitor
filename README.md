@@ -90,6 +90,87 @@ MEAS:VOLT?
 @if last < 1 @halt
 ```
 
+## 🧠 Sintassi meta-comandi (`SCPI_combined_monitor.py`)
+
+Nel Combined Monitor ogni riga può essere:
+- un **meta-comando** (inizia con `@`), oppure
+- un **comando SCPI** normale (es. `*IDN?`, `MEAS:VOLT?`).
+
+### Comandi disponibili
+
+#### `@conn`
+Crea una connessione e la registra con un nome (target).
+
+```text
+@conn <nome> serial <porta> [baud=9600] [timeout_s=2.0] [terminatore=\n]
+@conn <nome> visa <resource> [timeout_s=2.0] [backend=auto] [terminatore=\n]
+@conn <nome> socket <host:port | host> [port=5025] [timeout_s=2.0] [terminatore=\n]
+```
+
+Esempi:
+```text
+@conn gen serial COM3 115200
+@conn dmm visa USB0::0x0957::0x1798::MY12345678::INSTR 3 auto \n
+@conn psu socket 192.168.1.55:5025 2 \n
+```
+
+#### `@target`
+Seleziona il target attivo su cui inviare i comandi SCPI successivi.
+
+```text
+@target <nome>
+```
+
+Esempio:
+```text
+@target gen
+*IDN?
+```
+
+#### `@wait`
+Attende un certo numero di secondi.
+
+```text
+@wait <secondi>
+```
+
+Esempio:
+```text
+@wait 0.5
+```
+
+#### `@if`
+Valuta una condizione e, se vera, esegue un'azione supportata.
+
+```text
+@if <left> <op> <right> <azione>
+```
+
+- `<left>` può essere `last` (ultima risposta query) o un valore letterale.
+- `<op>` supportati: `==`, `!=`, `>`, `<`, `>=`, `<=`.
+- Azioni supportate:
+  - `@halt`
+  - `@wait <secondi>`
+
+Esempi:
+```text
+MEAS:VOLT?
+@if last < 1 @halt
+@if last >= 5 @wait 1
+```
+
+#### `@halt`
+Ferma l'esecuzione dello script.
+
+```text
+@halt
+```
+
+### Note utili
+
+- Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
+- Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
