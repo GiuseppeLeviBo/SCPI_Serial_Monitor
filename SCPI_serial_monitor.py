@@ -492,7 +492,9 @@ class App(tk.Tk):
         self.socket_port_entry.state(["disabled"])
 
         if mode == "serial":
-            self.serial_combo.state(["readonly" if list_ports else "!disabled"])
+            available_ports = tuple(self.serial_combo.cget("values"))
+            serial_combo_state = "readonly" if list_ports and available_ports else "!disabled"
+            self.serial_combo.state([serial_combo_state])
             self.baud_entry.state(["!disabled"])
         elif mode == "visa":
             self.visa_entry.state(["!disabled"])
@@ -520,8 +522,9 @@ class App(tk.Tk):
         if list_ports is not None:
             ports = [p.device for p in list_ports.comports()]
         self.serial_combo["values"] = ports
-        if ports and not self.serial_port.get():
+        if ports and self.serial_port.get() not in ports:
             self.serial_port.set(ports[0])
+        self._update_connection_fields()
 
     def _append_log(self, text: str, kind: str = "INFO"):
         timestamp = time.strftime("%H:%M:%S")
@@ -907,8 +910,12 @@ class App(tk.Tk):
         mode = self.conn_type.get()
         try:
             if mode == "serial":
+                self._refresh_ports()
+                selected_port = self.serial_port.get().strip()
+                if not selected_port:
+                    raise ValueError("Nessuna porta seriale selezionata.")
                 self.transport = SerialTransport(
-                    port=self.serial_port.get(),
+                    port=selected_port,
                     baudrate=int(self.baudrate.get()),
                     timeout=timeout,
                     terminator=term,
