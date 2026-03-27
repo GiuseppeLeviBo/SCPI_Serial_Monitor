@@ -3,6 +3,7 @@ import threading
 import time
 import tkinter as tk
 import re
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ class CombinedScriptEngine:
         self.last_command: Optional[str] = None
         self.stop_requested = False
         self.serial_query_retry_delay_s = 1.0
+        self.serial_pre_query_flush = True
 
     def reset_runtime(self):
         self.current_target = None
@@ -251,6 +253,11 @@ class CombinedScriptEngine:
         self.logger("TX", f"[{self.current_target}] {cmd}")
 
         if is_query_command(cmd):
+            if self.serial_pre_query_flush and isinstance(transport, SerialTransport):
+                # Evita che eventuali reply residue (es. "OK" da un comando non-query precedente)
+                # vengano lette come risposta della query corrente.
+                with contextlib.suppress(Exception):
+                    transport.ser.reset_input_buffer()
             try:
                 reply = transport.query(cmd)
             except TimeoutError:
