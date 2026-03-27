@@ -4,7 +4,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from SCPI_serial_monitor import (
     RawSocketScpiTransport,
@@ -25,8 +25,9 @@ class TargetConnection:
 class CombinedScriptEngine:
     """Motore script ispirato a core_engine ma integrato con il monitor."""
 
-    def __init__(self, logger: Callable[[str, str], None]):
+    def __init__(self, logger: Callable[[str, str], None], history_logger: Optional[Callable[[str], None]] = None):
         self.logger = logger
+        self.history_logger = history_logger
         self.targets: Dict[str, TargetConnection] = {}
         self.current_target: Optional[str] = None
         self.last: Optional[str] = None
@@ -50,6 +51,30 @@ class CombinedScriptEngine:
     def _parse_terminator(self, value: str) -> str:
         return value.encode("utf-8").decode("unicode_escape")
 
+    @staticmethod
+    def _escape_terminator(value: str) -> str:
+        return value.encode("unicode_escape").decode("ascii")
+
+    def _build_conn_history_command(
+        self,
+        name: str,
+        conn_type: str,
+        endpoint: str,
+        timeout_s: float,
+        terminator: str,
+        baud: Optional[int] = None,
+        backend: Optional[str] = None,
+        socket_port: Optional[int] = None,
+    ) -> str:
+        if conn_type == "serial":
+            return f"@conn {name} serial {endpoint} {baud} {timeout_s:g} {self._escape_terminator(terminator)}"
+        if conn_type == "visa":
+            return f"@conn {name} visa {endpoint} {timeout_s:g} {backend} {self._escape_terminator(terminator)}"
+        if conn_type == "socket":
+            endpoint_value = f"{endpoint}:{socket_port}" if socket_port is not None else endpoint
+            return f"@conn {name} socket {endpoint_value} {timeout_s:g} {self._escape_terminator(terminator)}"
+        return f"@conn {name} {conn_type} {endpoint}"
+
     def cmd_conn(self, args):
         if len(args) < 3:
             raise ValueError("@conn richiede: nome tipo endpoint [parametri]")
@@ -58,12 +83,21 @@ class CombinedScriptEngine:
         conn_type = args[1].lower()
         endpoint = args[2]
         params = args[3:]
+        history_cmd = None
 
         if conn_type == "serial":
             baud = int(params[0]) if params else 9600
             timeout_s = float(params[1]) if len(params) > 1 else 2.0
             terminator = self._parse_terminator(params[2]) if len(params) > 2 else "\n"
             transport = SerialTransport(endpoint, baud, timeout_s, terminator)
+            history_cmd = self._build_conn_history_command(
+                name=name,
+                conn_type=conn_type,
+                endpoint=endpoint,
+                baud=baud,
+                timeout_s=timeout_s,
+                terminator=terminator,
+            )
 
         elif conn_type == "visa":
             timeout_s = float(params[0]) if params else 2.0
@@ -74,6 +108,14 @@ class CombinedScriptEngine:
                 timeout_ms=int(timeout_s * 1000),
                 terminator=terminator,
                 backend=backend,
+            )
+            history_cmd = self._build_conn_history_command(
+                name=name,
+                conn_type=conn_type,
+                endpoint=endpoint,
+                timeout_s=timeout_s,
+                backend=backend,
+                terminator=terminator,
             )
 
         elif conn_type == "socket":
@@ -87,6 +129,14 @@ class CombinedScriptEngine:
             timeout_s = float(params[0]) if params else 2.0
             terminator = self._parse_terminator(params[1]) if len(params) > 1 else "\n"
             transport = RawSocketScpiTransport(host, port, timeout_s, terminator)
+            history_cmd = self._build_conn_history_command(
+                name=name,
+                conn_type=conn_type,
+                endpoint=host,
+                socket_port=port,
+                timeout_s=timeout_s,
+                terminator=terminator,
+            )
 
         else:
             raise ValueError(f"Transport sconosciuto: {conn_type}")
@@ -94,6 +144,8 @@ class CombinedScriptEngine:
         transport.connect()
         self.targets[name] = TargetConnection(name=name, transport=transport)
         self.logger("INFO", f"CONN: {name} -> {conn_type} {endpoint}")
+        if history_cmd and self.history_logger:
+            self.history_logger(history_cmd)
 
     def cmd_target(self, args):
         if not args:
@@ -207,7 +259,8 @@ class CombinedMonitorApp(tk.Tk):
         self.geometry("1150x760")
         self.minsize(900, 600)
 
-        self.engine = CombinedScriptEngine(self._append_log)
+        self.connection_history: List[str] = []
+        self.engine = CombinedScriptEngine(self._append_log, self._add_conn_history_entry)
         self.run_thread: Optional[threading.Thread] = None
         self.running = False
 
@@ -251,11 +304,31 @@ class CombinedMonitorApp(tk.Tk):
         self.log = ScrolledText(bottom, wrap="word", font=("Consolas", 10), state="disabled")
         self.log.pack(fill="both", expand=True)
 
+        conn_hist = ttk.LabelFrame(root, text="History connessioni (@conn)", padding=10)
+        conn_hist.pack(fill="both", pady=(10, 0))
+        self.conn_history_list = tk.Listbox(conn_hist, height=6)
+        self.conn_history_list.pack(fill="both", expand=True)
+        self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
+
     def _append_log(self, level: str, msg: str):
         self.log.configure(state="normal")
         self.log.insert("end", f"[{level}] {msg}\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def _add_conn_history_entry(self, command: str):
+        self.connection_history.append(command)
+        if hasattr(self, "conn_history_list"):
+            self.conn_history_list.insert("end", command)
+            self.conn_history_list.see("end")
+
+    def _insert_selected_conn_history(self, _event=None):
+        selection = self.conn_history_list.curselection()
+        if not selection:
+            return
+        command = self.conn_history_list.get(selection[0])
+        self.script_text.insert("end", f"{command}\n")
+        self.script_text.see("end")
 
     def clear_log(self):
         self.log.configure(state="normal")
