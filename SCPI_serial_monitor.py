@@ -952,19 +952,29 @@ class App(tk.Tk):
 
     # --- COMUNICAZIONE ---
     def _reader_loop(self):
-        """Thread background che legge dati non sollecitati."""
-        while not self.reader_stop.is_set():
-            try:
-                if self.transport and self.transport.is_connected:
-                    # Acquisire il lock previene conflitti con query()
-                    with self.io_lock:
-                        msg = self.transport.read_available()
-                    if msg:
-                        self.rx_queue.put(("RX", msg.rstrip("\r\n")))
-            except Exception as exc:
-                self.rx_queue.put(("ERR", f"Reader fermato: {exc}"))
-                break
-            time.sleep(0.05)
+            """Thread background che legge dati non sollecitati."""
+            rx_buffer = ""  # <--- NUOVO: Buffer per ricostruire le righe spezzate
+            
+            while not self.reader_stop.is_set():
+                try:
+                    if self.transport and self.transport.is_connected:
+                        with self.io_lock:
+                            msg = self.transport.read_available()
+                        
+                        if msg:
+                            rx_buffer += msg
+                            # Finché c'è un 'a capo' nel buffer, estrai la riga completa
+                            while '\n' in rx_buffer:
+                                line, rx_buffer = rx_buffer.split('\n', 1)
+                                clean_line = line.strip()
+                                # Se la riga non è vuota, mandala alla GUI
+                                if clean_line: 
+                                    self.rx_queue.put(("RX", clean_line))
+                                    
+                except Exception as exc:
+                    self.rx_queue.put(("ERR", f"Reader fermato: {exc}"))
+                    break
+                time.sleep(0.05)
 
     def _pump_rx_queue(self):
         try:
