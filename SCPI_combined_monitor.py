@@ -292,12 +292,12 @@ class CombinedScriptEngine:
         elif cmd == "if":
             self._exec_if(args)
         elif cmd == "store":
-            name = args[0] if args else ""
+            name = " ".join(args).strip() if args else ""
             self._store_value(name)
         elif cmd == "startstore":
             self.auto_store_enabled = True
             if args:
-                self.auto_store_label = args[0]
+                self.auto_store_label = " ".join(args).strip()
             self.logger("INFO", f"STARTSTORE: attivo (label={self.auto_store_label})")
         elif cmd == "stopstore":
             self.auto_store_enabled = False

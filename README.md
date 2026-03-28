@@ -208,6 +208,8 @@ Salva l'ultimo valore testuale (`last`) in `lastres.csv` con timestamp, target, 
 @store <label>
 ```
 
+`<label>` può contenere spazi (es. `@store test canale 1` oppure `@store "test canale 1"`).
+
 Formato riga CSV:
 ```text
 DDMMYYYY HH:MM; <target>; <last_command>; <label>; <value|NOVAL>
@@ -261,6 +263,7 @@ Abilita il salvataggio automatico in `lastres.csv` di **ogni risposta ASCII di q
 Dettagli:
 - Se `label` è omesso viene usato `AUTO`.
 - Il salvataggio viene effettuato dopo ogni query SCPI che produce `last`.
+- `label` può contenere spazi (es. `@startstore burn in` o `@startstore "burn in"`).
 
 Esempio:
 ```text
