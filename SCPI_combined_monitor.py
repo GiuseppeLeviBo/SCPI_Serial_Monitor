@@ -400,12 +400,14 @@ class CombinedScriptEngine:
     def _csv_sanitize(value: Optional[str]) -> str:
         if value is None:
             return "NOVAL"
-        return value
+        clean = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        clean = clean.strip("\n")
+        return clean.replace("\n", r"\n")
 
     def _append_lastres_row(self, target: str, command: str, name: str, value: Optional[str]):
         ts = datetime.now().strftime("%d%m%Y %H:%M")
         with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
-            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
             writer.writerow([ts, target, command, name, self._csv_sanitize(value)])
 
     def _store_value(self, name: str, value: Optional[str] = None):
