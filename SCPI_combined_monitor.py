@@ -5,6 +5,7 @@ import tkinter as tk
 import re
 import contextlib
 import csv
+import shlex
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -271,7 +272,9 @@ class CombinedScriptEngine:
                 raise
 
     def _run_meta(self, line: str):
-        tokens = line.split()
+        tokens = shlex.split(line)
+        if not tokens:
+            return
         cmd = tokens[0][1:].lower()
         args = tokens[1:]
 
@@ -307,7 +310,7 @@ class CombinedScriptEngine:
         elif cmd in ("call", "script"):
             if not args:
                 raise ValueError("@call richiede il nome script")
-            script_name = args[0].strip("()")
+            script_name = " ".join(args).strip().strip("()")
             script_lines = self._load_script_lines(script_name)
             self._push_script(script_name, script_lines)
         elif cmd == "rts":

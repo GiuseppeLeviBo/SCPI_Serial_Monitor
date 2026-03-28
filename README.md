@@ -180,6 +180,7 @@ Note:
 - `@script` è un alias di `@call`.
 - Lo script viene cercato nell'indice JSON del Combined Monitor (`~/.scpi_combined_scripts.json`) e nella cartella `~/.scpi_macros`.
 - Quando lo script chiamato termina, l'esecuzione riprende automaticamente dal chiamante.
+- I nomi script con spazi sono supportati sia senza virgolette (`@call calibrazione finale`) sia con virgolette (`@call "calibrazione finale"`).
 
 Esempio:
 ```text
