@@ -411,11 +411,30 @@ class CombinedScriptEngine:
             writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
             writer.writerow([ts, target, command, name, self._csv_sanitize(value)])
 
+    def _append_lastres_block(self, target: str, command: str, name: str, value: Optional[str]):
+        """
+        Formato usato da @startstore:
+        - prima riga con soli metadati
+        - poi blocco dati su righe dedicate (senza quoting CSV)
+        """
+        ts = datetime.now().strftime("%d%m%Y %H:%M")
+        normalized = self._csv_sanitize(value)
+        with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
+            fp.write(f"{ts};{target};{command};{name}\n")
+            if not normalized:
+                fp.write("NOVAL\n")
+                return
+            for raw_line in normalized.splitlines():
+                fp.write(f"{raw_line}\n")
+
     def _store_value(self, name: str, value: Optional[str] = None):
         target = self.current_target or ""
         command = self.last_command or ""
         stored_value = self.last if value is None else value
-        self._append_lastres_row(target, command, name, stored_value)
+        if self.auto_store_enabled and value is not None:
+            self._append_lastres_block(target, command, name, stored_value)
+        else:
+            self._append_lastres_row(target, command, name, stored_value)
         self.logger("INFO", f"STORE: {name} [{target}]")
 
     def _store_comment(self, text: str):
