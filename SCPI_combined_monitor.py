@@ -32,22 +32,34 @@ class TargetConnection:
 class CombinedScriptEngine:
     """Motore script ispirato a core_engine ma integrato con il monitor."""
 
-    def __init__(self, logger: Callable[[str, str], None], history_logger: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        logger: Callable[[str, str], None],
+        history_logger: Optional[Callable[[str], None]] = None,
+        script_loader: Optional[Callable[[str], List[str]]] = None,
+    ):
         self.logger = logger
         self.history_logger = history_logger
+        self.script_loader = script_loader
         self.targets: Dict[str, TargetConnection] = {}
         self.current_target: Optional[str] = None
         self.last: Optional[str] = None
+        self.last_bin: Optional[bytes] = None
         self.last_command: Optional[str] = None
         self.stop_requested = False
+        self.readbin_armed = False
+        self.call_stack: List[Dict[str, object]] = []
         self.serial_query_retry_delay_s = 1.0
         self.serial_pre_query_flush = True
 
     def reset_runtime(self):
         self.current_target = None
         self.last = None
+        self.last_bin = None
         self.last_command = None
         self.stop_requested = False
+        self.readbin_armed = False
+        self.call_stack = []
 
     def close_all(self):
         for tc in self.targets.values():
@@ -203,9 +215,38 @@ class CombinedScriptEngine:
         else:
             self.logger("WARN", f"Azione @if non supportata: {' '.join(action)}")
 
-    def run_lines(self, lines):
+    def _load_script_lines(self, script_name: str) -> List[str]:
+        if not self.script_loader:
+            raise ValueError("Script loader non configurato")
+        loaded = self.script_loader(script_name)
+        return list(loaded)
+
+    def _push_script(self, script_name: str, lines: List[str]):
+        self.call_stack.append(
+            {
+                "name": script_name,
+                "lines": lines,
+                "pc": 0,
+            }
+        )
+        self.logger("INFO", f"CALL -> {script_name}")
+
+    def run_lines(self, lines, entry_script_name: str = "__main__"):
         self.reset_runtime()
-        for idx, raw in enumerate(lines, start=1):
+        self._push_script(entry_script_name, list(lines))
+
+        while self.call_stack and not self.stop_requested:
+            frame = self.call_stack[-1]
+            script_name = str(frame["name"])
+            script_lines = frame["lines"]
+            pc = int(frame["pc"])
+
+            if pc >= len(script_lines):
+                self.call_stack.pop()
+                continue
+
+            raw = script_lines[pc]
+            frame["pc"] = pc + 1
             if self.stop_requested:
                 self.logger("WARN", "Esecuzione interrotta")
                 break
@@ -220,7 +261,7 @@ class CombinedScriptEngine:
                 else:
                     self._run_command(line)
             except Exception as exc:
-                self.logger("ERR", f"L{idx}: {exc}")
+                self.logger("ERR", f"{script_name}:L{pc + 1}: {exc}")
                 raise
 
     def _run_meta(self, line: str):
@@ -241,8 +282,86 @@ class CombinedScriptEngine:
             self.logger("INFO", "HALT")
         elif cmd == "if":
             self._exec_if(args)
+        elif cmd == "store":
+            name = args[0] if args else ""
+            self._store_value(name)
+        elif cmd in ("call", "script"):
+            if not args:
+                raise ValueError("@call richiede il nome script")
+            script_name = args[0].strip("()")
+            script_lines = self._load_script_lines(script_name)
+            self._push_script(script_name, script_lines)
+        elif cmd == "rts":
+            if self.call_stack:
+                ended = self.call_stack.pop()
+                self.logger("INFO", f"RTS <- {ended['name']}")
+            if not self.call_stack:
+                self.stop_requested = True
+        elif cmd == "readbin":
+            self.readbin_armed = True
+            self.logger("INFO", "READBIN armato: prossimo comando leggerà dati binari")
+        elif cmd == "savebin":
+            if not args:
+                raise ValueError("@savebin richiede un filename")
+            self._save_binary(args[0])
         else:
             self.logger("WARN", f"Meta comando non supportato: {line}")
+
+    def _read_binary_response(self, transport) -> bytes:
+        # Seriale: usa direttamente il buffer bytes del driver.
+        if isinstance(transport, SerialTransport):
+            deadline = time.time() + max(transport.timeout, 0.2)
+            chunks: List[bytes] = []
+            while time.time() < deadline:
+                waiting = getattr(transport.ser, "in_waiting", 0)
+                if waiting:
+                    chunks.append(transport.ser.read(waiting))
+                else:
+                    time.sleep(0.01)
+            return b"".join(chunks)
+
+        # VISA: read_raw se disponibile.
+        inst = getattr(transport, "inst", None)
+        if inst is not None and hasattr(inst, "read_raw"):
+            data = inst.read_raw()
+            return data if isinstance(data, (bytes, bytearray)) else bytes(data)
+
+        # Socket: lettura binaria best-effort fino a timeout.
+        sock = getattr(transport, "sock", None)
+        if sock is not None:
+            chunks: List[bytes] = []
+            deadline = time.time() + getattr(transport, "timeout", 2.0)
+            while time.time() < deadline:
+                try:
+                    chunk = sock.recv(4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+        raise RuntimeError("Transport non supporta lettura binaria")
+
+    def _store_value(self, name: str):
+        ts = datetime.now().strftime("%d%m%Y %H:%M")
+        target = self.current_target or ""
+        command = self.last_command or ""
+        value = "NOVAL" if self.last is None else self.last
+        line = f"{ts}; {target}; {command}; {name}; {value}\n"
+        with open("lastres.csv", "a", encoding="utf-8") as fp:
+            fp.write(line)
+        self.logger("INFO", f"STORE: {line.strip()}")
+
+    def _save_binary(self, filename: str):
+        if self.last_bin is None:
+            raise RuntimeError("Nessun dato binario disponibile (usa prima @readbin + comando)")
+        p = Path(filename)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = self.current_target or "notarget"
+        out = p.with_name(f"{p.stem}_{ts}_{target}{p.suffix}")
+        out.write_bytes(self.last_bin)
+        self.logger("INFO", f"SAVEBIN: {out} ({len(self.last_bin)} bytes)")
 
     def _run_command(self, cmd: str):
         if not self.current_target:
@@ -252,7 +371,14 @@ class CombinedScriptEngine:
         self.last_command = cmd
         self.logger("TX", f"[{self.current_target}] {cmd}")
 
-        if is_query_command(cmd):
+        if self.readbin_armed:
+            transport.write(cmd)
+            data = self._read_binary_response(transport)
+            self.last_bin = data
+            self.last = None
+            self.readbin_armed = False
+            self.logger("RXBIN", f"[{self.current_target}] {len(data)} bytes")
+        elif is_query_command(cmd):
             if self.serial_pre_query_flush:
                 # Evita che eventuali reply residue (es. "OK" da un comando non-query precedente)
                 # vengano lette come risposta della query corrente.
@@ -274,10 +400,12 @@ class CombinedScriptEngine:
                 time.sleep(self.serial_query_retry_delay_s)
                 reply = transport.query(cmd)
             self.last = reply
+            self.last_bin = None
             self.logger("RX", f"[{self.current_target}] {reply}")
         else:
             transport.write(cmd)
             self.last = None
+            self.last_bin = None
 
 
 class CombinedMonitorApp(tk.Tk):
@@ -288,7 +416,11 @@ class CombinedMonitorApp(tk.Tk):
         self.minsize(900, 600)
 
         self.connection_history: List[str] = []
-        self.engine = CombinedScriptEngine(self._append_log, self._add_conn_history_entry)
+        self.engine = CombinedScriptEngine(
+            self._append_log,
+            self._add_conn_history_entry,
+            script_loader=self._load_script_lines_for_engine,
+        )
         self.run_thread: Optional[threading.Thread] = None
         self.running = False
         self.script_name: Optional[str] = None
@@ -478,6 +610,17 @@ class CombinedMonitorApp(tk.Tk):
         path = self._script_path_from_name(normalized_name)
         self._load_script_from_path(path, normalized_name)
 
+    def _load_script_lines_for_engine(self, script_name: str) -> List[str]:
+        normalized_name = self._normalize_script_name(script_name)
+        if normalized_name in self.script_index:
+            path = self._script_path_from_name(normalized_name)
+        else:
+            path = SCRIPT_DIR / self._script_filename_from_name(normalized_name)
+        if not path.exists():
+            raise ValueError(f"Script '{normalized_name}' non trovato in {path}")
+        content = path.read_text(encoding="utf-8")
+        return content.splitlines()
+
     def _load_script_from_path(self, path: Path, script_name: Optional[str] = None):
         try:
             content = path.read_text(encoding="utf-8")
@@ -578,7 +721,8 @@ class CombinedMonitorApp(tk.Tk):
 
         def worker():
             try:
-                self.engine.run_lines(lines)
+                entry_name = self.script_name or "__editor__"
+                self.engine.run_lines(lines, entry_script_name=entry_name)
                 self._append_log("INFO", "Script completato")
             except Exception as exc:
                 self._append_log("ERR", f"Script terminato con errore: {exc}")

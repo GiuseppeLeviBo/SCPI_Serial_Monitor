@@ -72,7 +72,7 @@ When interfacing with embedded devices, an active background reader thread can a
 
 Ora il repository include anche `SCPI_combined_monitor.py`, un monitor ibrido che unisce:
 - la logica di monitor live del serial monitor,
-- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`).
+- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`).
 
 Avvio rapido:
 
@@ -168,9 +168,92 @@ Ferma l'esecuzione dello script.
 @halt
 ```
 
+#### `@call` / `@script`
+Chiama uno script salvato e crea un nuovo frame nello stack di esecuzione.
+
+```text
+@call <nome_script>
+@script <nome_script>
+```
+
+Note:
+- `@script` è un alias di `@call`.
+- Lo script viene cercato nell'indice JSON del Combined Monitor (`~/.scpi_combined_scripts.json`) e nella cartella `~/.scpi_macros`.
+- Quando lo script chiamato termina, l'esecuzione riprende automaticamente dal chiamante.
+
+Esempio:
+```text
+@call calibrazione
+MEAS:VOLT?
+```
+
+#### `@rts`
+Return To Script: forza il ritorno immediato allo script chiamante (uscita anticipata dallo script corrente).
+
+```text
+@rts
+```
+
+Uso tipico:
+```text
+MEAS:STAT?
+@if last != OK @rts
+```
+
+#### `@store`
+Salva l'ultimo valore testuale (`last`) in `lastres.csv` con timestamp, target, comando e nome misura.
+
+```text
+@store <label>
+```
+
+Formato riga CSV:
+```text
+DDMMYYYY HH:MM; <target>; <last_command>; <label>; <value|NOVAL>
+```
+
+Esempio:
+```text
+MEAS:VOLT?
+@store volt
+```
+
+#### `@readbin`
+Arma la lettura binaria: il **prossimo comando SCPI** viene inviato come write e la risposta viene acquisita come byte raw in `last_bin`.
+
+```text
+@readbin
+```
+
+Esempio:
+```text
+@readbin
+WAV:DATA?
+```
+
+#### `@savebin`
+Salva su file il contenuto binario letto con `@readbin`.
+
+```text
+@savebin <filename>
+```
+
+Comportamento:
+- Se non ci sono dati binari disponibili, genera errore.
+- Il nome file viene arricchito automaticamente come:
+  - `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`
+
+Esempio:
+```text
+@readbin
+WAV:DATA?
+@savebin wave.bin
+```
+
 ### Note utili
 
 - Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
+- Una lettura binaria con `@readbin` salva i byte in `last_bin` (e azzera `last`).
 - Nel Combined Monitor, se una query seriale va in timeout, viene effettuato automaticamente un retry dopo 1s.
 - Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
 
