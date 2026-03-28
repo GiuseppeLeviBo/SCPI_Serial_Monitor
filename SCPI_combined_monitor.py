@@ -375,6 +375,7 @@ class CombinedScriptEngine:
             return first
 
         lines: List[str] = [first] if first is not None else []
+        pending = ""
         idle_deadline = time.time() + self.serial_multiline_idle_s
         while time.time() < idle_deadline:
             extra = transport.read_available()
@@ -382,11 +383,17 @@ class CombinedScriptEngine:
                 time.sleep(0.01)
                 continue
             idle_deadline = time.time() + self.serial_multiline_idle_s
-            for raw_line in extra.splitlines():
+            pending += extra.replace("\r\n", "\n").replace("\r", "\n")
+            chunks = pending.split("\n")
+            pending = chunks.pop() if chunks else ""
+            for raw_line in chunks:
                 clean = raw_line.strip()
                 if clean:
                     lines.append(clean)
 
+        tail = pending.strip()
+        if tail:
+            lines.append(tail)
         return "\n".join(lines).strip()
 
     @staticmethod
