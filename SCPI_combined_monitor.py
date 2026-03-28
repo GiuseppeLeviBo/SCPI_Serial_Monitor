@@ -54,6 +54,7 @@ class CombinedScriptEngine:
         self.auto_store_label = "AUTO"
         self.serial_query_retry_delay_s = 1.0
         self.serial_pre_query_flush = True
+        self.serial_multiline_idle_s = 0.12
 
     def reset_runtime(self):
         self.current_target = None
@@ -361,6 +362,30 @@ class CombinedScriptEngine:
 
         raise RuntimeError("Transport non supporta lettura binaria")
 
+    def _query_with_buffered_multiline(self, transport, cmd: str) -> str:
+        """
+        Esegue una query e, per i transport seriali, prova a ricomporre eventuali
+        righe aggiuntive arrivate subito dopo la prima risposta.
+        """
+        first = transport.query(cmd)
+        if not isinstance(transport, SerialTransport):
+            return first
+
+        lines: List[str] = [first] if first is not None else []
+        idle_deadline = time.time() + self.serial_multiline_idle_s
+        while time.time() < idle_deadline:
+            extra = transport.read_available()
+            if not extra:
+                time.sleep(0.01)
+                continue
+            idle_deadline = time.time() + self.serial_multiline_idle_s
+            for raw_line in extra.splitlines():
+                clean = raw_line.strip()
+                if clean:
+                    lines.append(clean)
+
+        return "\n".join(lines).strip()
+
     @staticmethod
     def _csv_sanitize(value: Optional[str]) -> str:
         if value is None:
@@ -421,7 +446,7 @@ class CombinedScriptEngine:
                     with contextlib.suppress(Exception):
                         _ = transport.read_available()
             try:
-                reply = transport.query(cmd)
+                reply = self._query_with_buffered_multiline(transport, cmd)
             except TimeoutError:
                 if not isinstance(transport, SerialTransport):
                     raise
@@ -430,7 +455,7 @@ class CombinedScriptEngine:
                     f"[{self.current_target}] Timeout query seriale: retry tra {self.serial_query_retry_delay_s:g}s",
                 )
                 time.sleep(self.serial_query_retry_delay_s)
-                reply = transport.query(cmd)
+                reply = self._query_with_buffered_multiline(transport, cmd)
             self.last = reply
             self.last_bin = None
             self.logger("RX", f"[{self.current_target}] {reply}")

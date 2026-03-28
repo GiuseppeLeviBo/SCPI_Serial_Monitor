@@ -292,6 +292,7 @@ Esempio:
 - Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
 - Una lettura binaria con `@readbin` salva i byte in `last_bin` (e azzera `last`).
 - Le risposte ASCII multi-riga vengono salvate correttamente in `lastres.csv` tramite quoting CSV (restano nello stesso record anche se contengono newline).
+- Sul transport seriale, il Combined Monitor applica una breve finestra di bufferizzazione dopo la query per ricomporre eventuali righe ASCII addizionali arrivate subito dopo la prima risposta.
 - Nel Combined Monitor, se una query seriale va in timeout, viene effettuato automaticamente un retry dopo 1s.
 - Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
 
