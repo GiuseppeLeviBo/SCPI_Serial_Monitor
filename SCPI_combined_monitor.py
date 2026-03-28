@@ -4,6 +4,7 @@ import time
 import tkinter as tk
 import re
 import contextlib
+import csv
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,8 @@ class CombinedScriptEngine:
         self.stop_requested = False
         self.readbin_armed = False
         self.call_stack: List[Dict[str, object]] = []
+        self.auto_store_enabled = False
+        self.auto_store_label = "AUTO"
         self.serial_query_retry_delay_s = 1.0
         self.serial_pre_query_flush = True
 
@@ -60,6 +63,8 @@ class CombinedScriptEngine:
         self.stop_requested = False
         self.readbin_armed = False
         self.call_stack = []
+        self.auto_store_enabled = False
+        self.auto_store_label = "AUTO"
 
     def close_all(self):
         for tc in self.targets.values():
@@ -285,6 +290,19 @@ class CombinedScriptEngine:
         elif cmd == "store":
             name = args[0] if args else ""
             self._store_value(name)
+        elif cmd == "startstore":
+            self.auto_store_enabled = True
+            if args:
+                self.auto_store_label = args[0]
+            self.logger("INFO", f"STARTSTORE: attivo (label={self.auto_store_label})")
+        elif cmd == "stopstore":
+            self.auto_store_enabled = False
+            self.logger("INFO", "STOPSTORE: disattivato")
+        elif cmd == "comment":
+            text = " ".join(args).strip()
+            if not text:
+                raise ValueError("@comment richiede un testo")
+            self._store_comment(text)
         elif cmd in ("call", "script"):
             if not args:
                 raise ValueError("@call richiede il nome script")
@@ -343,15 +361,29 @@ class CombinedScriptEngine:
 
         raise RuntimeError("Transport non supporta lettura binaria")
 
-    def _store_value(self, name: str):
+    @staticmethod
+    def _csv_sanitize(value: Optional[str]) -> str:
+        if value is None:
+            return "NOVAL"
+        return value
+
+    def _append_lastres_row(self, target: str, command: str, name: str, value: Optional[str]):
         ts = datetime.now().strftime("%d%m%Y %H:%M")
+        with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
+            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+            writer.writerow([ts, target, command, name, self._csv_sanitize(value)])
+
+    def _store_value(self, name: str, value: Optional[str] = None):
         target = self.current_target or ""
         command = self.last_command or ""
-        value = "NOVAL" if self.last is None else self.last
-        line = f"{ts}; {target}; {command}; {name}; {value}\n"
-        with open("lastres.csv", "a", encoding="utf-8") as fp:
-            fp.write(line)
-        self.logger("INFO", f"STORE: {line.strip()}")
+        stored_value = self.last if value is None else value
+        self._append_lastres_row(target, command, name, stored_value)
+        self.logger("INFO", f"STORE: {name} [{target}]")
+
+    def _store_comment(self, text: str):
+        target = self.current_target or ""
+        self._append_lastres_row(target, "@comment", "COMMENT", text)
+        self.logger("INFO", f"COMMENT salvato: {text}")
 
     def _save_binary(self, filename: str):
         if self.last_bin is None:
@@ -402,6 +434,8 @@ class CombinedScriptEngine:
             self.last = reply
             self.last_bin = None
             self.logger("RX", f"[{self.current_target}] {reply}")
+            if self.auto_store_enabled:
+                self._store_value(self.auto_store_label, value=reply)
         else:
             transport.write(cmd)
             self.last = None

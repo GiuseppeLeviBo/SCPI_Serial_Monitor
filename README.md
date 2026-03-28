@@ -72,7 +72,7 @@ When interfacing with embedded devices, an active background reader thread can a
 
 Ora il repository include anche `SCPI_combined_monitor.py`, un monitor ibrido che unisce:
 - la logica di monitor live del serial monitor,
-- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`).
+- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`) con estensioni `@startstore`, `@stopstore`, `@comment`.
 
 Avvio rapido:
 
@@ -250,10 +250,48 @@ WAV:DATA?
 @savebin wave.bin
 ```
 
+#### `@startstore`
+Abilita il salvataggio automatico in `lastres.csv` di **ogni risposta ASCII di query** da quel punto in poi.
+
+```text
+@startstore [label]
+```
+
+Dettagli:
+- Se `label` è omesso viene usato `AUTO`.
+- Il salvataggio viene effettuato dopo ogni query SCPI che produce `last`.
+
+Esempio:
+```text
+@startstore trend
+MEAS:VOLT?
+MEAS:CURR?
+```
+
+#### `@stopstore`
+Disabilita il salvataggio automatico attivato da `@startstore`.
+
+```text
+@stopstore
+```
+
+#### `@comment`
+Salva una riga di commento in `lastres.csv` (utile per annotare eventi, step test, condizioni).
+
+```text
+@comment <testo libero>
+```
+
+Esempio:
+```text
+@comment Inizio sweep canale 1
+```
+
 ### Note utili
 
 - Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
 - Una lettura binaria con `@readbin` salva i byte in `last_bin` (e azzera `last`).
+- Le risposte ASCII multi-riga vengono salvate correttamente in `lastres.csv` tramite quoting CSV (restano nello stesso record anche se contengono newline).
 - Nel Combined Monitor, se una query seriale va in timeout, viene effettuato automaticamente un retry dopo 1s.
 - Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
 
