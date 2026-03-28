@@ -40,7 +40,7 @@ Depending on the protocols you plan to use, you will need the following Python p
 
 1. **Clone the repository:**
        git clone https://github.com/GiuseppeLeviBo/SCPI_Serial_Monitor.git
-       cd SCPI_Serial_Monitorr
+       cd SCPI_Serial_Monitor
 
 1. **Install dependencies:**
        pip install -r requirements.txt
@@ -53,13 +53,13 @@ Depending on the protocols you plan to use, you will need the following Python p
 ## 📖 How it Works
 
 ### Sending Commands
-Type your SCPI command in the bottom input field and press `Enter` or click **Invia**. 
+Type your SCPI command in the bottom input field and press `Enter` or click **Send**. 
 - If the command ends with a `?` (e.g., `*IDN?`), the app will automatically treat it as a Query, waiting for a response and displaying it in the log.
 - You can force a Query for commands that don't end in `?` by clicking the **Query** button.
 
 ### Macros
 Macros allow you to automate testing sequences. 
-- Click **Nuova** to open the Macro Editor. 
+- Click **New** to open the Macro Editor. 
 - Write one command per line. 
 - During execution, the application will pause for `0.1s` after standard write commands to allow slow instruments (like custom Arduino boards) to process the data, while it will actively wait for responses for query commands (`?`).
 - You can Export/Import Macros to share them across different setups.
@@ -70,17 +70,17 @@ When interfacing with embedded devices, an active background reader thread can a
 
 ## 🧩 Combined Monitor (NEW)
 
-Ora il repository include anche `SCPI_combined_monitor.py`, un monitor ibrido che unisce:
-- la logica di monitor live del serial monitor,
-- il linguaggio di scripting/meta-comandi del core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`) con estensioni `@startstore`, `@stopstore`, `@comment`.
+The repository also includes `SCPI_combined_monitor.py`, a hybrid monitor that combines:
+- the live monitoring logic from the serial monitor,
+- the scripting/meta-command language from the core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`) with extensions `@startstore`, `@stopstore`, `@comment`.
 
-Avvio rapido:
+Quick start:
 
 ```bash
 python SCPI_combined_monitor.py
 ```
 
-Esempio script:
+Example script:
 
 ```text
 @conn gen serial COM3 115200
@@ -91,24 +91,24 @@ MEAS:VOLT?
 @if last < 1 @halt
 ```
  ![Example screenshot](Screenshot2.png)
-## 🧠 Sintassi meta-comandi (`SCPI_combined_monitor.py`)
+## 🧠 Meta-command Syntax (`SCPI_combined_monitor.py`)
 
-Nel Combined Monitor ogni riga può essere:
-- un **meta-comando** (inizia con `@`), oppure
-- un **comando SCPI** normale (es. `*IDN?`, `MEAS:VOLT?`).
+In the Combined Monitor, each line can be:
+- a **meta-command** (starts with `@`), or
+- a regular **SCPI command** (e.g., `*IDN?`, `MEAS:VOLT?`).
 
-### Comandi disponibili
+### Available Commands
 
 #### `@conn`
-Crea una connessione e la registra con un nome (target).
+Creates a connection and registers it with a name (target).
 
 ```text
-@conn <nome> serial <porta> [baud=9600] [timeout_s=2.0] [terminatore=\n]
-@conn <nome> visa <resource> [timeout_s=2.0] [backend=auto] [terminatore=\n]
-@conn <nome> socket <host:port | host> [port=5025] [timeout_s=2.0] [terminatore=\n]
+@conn <name> serial <port> [baud=9600] [timeout_s=2.0] [terminator=\n]
+@conn <name> visa <resource> [timeout_s=2.0] [backend=auto] [terminator=\n]
+@conn <name> socket <host:port | host> [port=5025] [timeout_s=2.0] [terminator=\n]
 ```
 
-Esempi:
+Examples:
 ```text
 @conn gen serial COM3 115200
 @conn dmm visa USB0::0x0957::0x1798::MY12345678::INSTR 3 auto \n
@@ -116,13 +116,13 @@ Esempi:
 ```
 
 #### `@target`
-Seleziona il target attivo su cui inviare i comandi SCPI successivi.
+Selects the active target where subsequent SCPI commands are sent.
 
 ```text
-@target <nome>
+@target <name>
 ```
 
-Esempio:
+Example:
 ```text
 @target gen
 @wait 1
@@ -130,31 +130,31 @@ Esempio:
 ```
 
 #### `@wait`
-Attende un certo numero di secondi.
+Waits for a specified number of seconds.
 
 ```text
-@wait <secondi>
+@wait <seconds>
 ```
 
-Esempio:
+Example:
 ```text
 @wait 0.5
 ```
 
 #### `@if`
-Valuta una condizione e, se vera, esegue un'azione supportata.
+Evaluates a condition and, if true, executes a supported action.
 
 ```text
-@if <left> <op> <right> <azione>
+@if <left> <op> <right> <action>
 ```
 
-- `<left>` può essere `last` (ultima risposta query) o un valore letterale.
-- `<op>` supportati: `==`, `!=`, `>`, `<`, `>=`, `<=`.
-- Azioni supportate:
+- `<left>` can be `last` (last query response) or a literal value.
+- Supported `<op>` operators: `==`, `!=`, `>`, `<`, `>=`, `<=`.
+- Supported actions:
   - `@halt`
-  - `@wait <secondi>`
+  - `@wait <seconds>`
 
-Esempi:
+Examples:
 ```text
 MEAS:VOLT?
 @if last < 1 @halt
@@ -162,91 +162,91 @@ MEAS:VOLT?
 ```
 
 #### `@halt`
-Ferma l'esecuzione dello script.
+Stops script execution.
 
 ```text
 @halt
 ```
 
 #### `@call` / `@script`
-Chiama uno script salvato e crea un nuovo frame nello stack di esecuzione.
+Calls a saved script and creates a new frame in the execution stack.
 
 ```text
-@call <nome_script>
-@script <nome_script>
+@call <script_name>
+@script <script_name>
 ```
 
-Note:
-- `@script` è un alias di `@call`.
-- Lo script viene cercato nell'indice JSON del Combined Monitor (`~/.scpi_combined_scripts.json`) e nella cartella `~/.scpi_macros`.
-- Quando lo script chiamato termina, l'esecuzione riprende automaticamente dal chiamante.
-- I nomi script con spazi sono supportati sia senza virgolette (`@call calibrazione finale`) sia con virgolette (`@call "calibrazione finale"`).
+Notes:
+- `@script` is an alias of `@call`.
+- The script is searched in the Combined Monitor JSON index (`~/.scpi_combined_scripts.json`) and in the `~/.scpi_macros` folder.
+- When the called script ends, execution automatically resumes in the caller.
+- Script names with spaces are supported both without quotes (`@call final calibration`) and with quotes (`@call "final calibration"`).
 
-Esempio:
+Example:
 ```text
-@call calibrazione
+@call calibration
 MEAS:VOLT?
 ```
 
 #### `@rts`
-Return To Script: forza il ritorno immediato allo script chiamante (uscita anticipata dallo script corrente).
+Return To Script: forces an immediate return to the caller script (early exit from the current script).
 
 ```text
 @rts
 ```
 
-Uso tipico:
+Typical use:
 ```text
 MEAS:STAT?
 @if last != OK @rts
 ```
 
 #### `@store`
-Salva l'ultimo valore testuale (`last`) in `lastres.csv` con timestamp, target, comando e nome misura.
+Saves the last textual value (`last`) in `lastres.csv` with timestamp, target, command, and measurement name.
 
 ```text
 @store <label>
 ```
 
-`<label>` può contenere spazi (es. `@store test canale 1` oppure `@store "test canale 1"`).
+`<label>` can contain spaces (e.g., `@store channel 1 test` or `@store "channel 1 test"`).
 
-Formato riga CSV:
+CSV row format:
 ```text
 DDMMYYYY HH:MM; <target>; <last_command>; <label>; <value|NOVAL>
 ```
 
-Esempio:
+Example:
 ```text
 MEAS:VOLT?
 @store volt
 ```
 
 #### `@readbin`
-Arma la lettura binaria: il **prossimo comando SCPI** viene inviato come write e la risposta viene acquisita come byte raw in `last_bin`.
+Arms binary reading: the **next SCPI command** is sent as a write and the response is captured as raw bytes in `last_bin`.
 
 ```text
 @readbin
 ```
 
-Esempio:
+Example:
 ```text
 @readbin
 WAV:DATA?
 ```
 
 #### `@savebin`
-Salva su file il contenuto binario letto con `@readbin`.
+Saves the binary content read by `@readbin` to a file.
 
 ```text
 @savebin <filename>
 ```
 
-Comportamento:
-- Se non ci sono dati binari disponibili, genera errore.
-- Il nome file viene arricchito automaticamente come:
+Behavior:
+- If no binary data is available, it raises an error.
+- The filename is automatically enriched as:
   - `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`
 
-Esempio:
+Example:
 ```text
 @readbin
 WAV:DATA?
@@ -254,18 +254,18 @@ WAV:DATA?
 ```
 
 #### `@startstore`
-Abilita il salvataggio automatico in `lastres.csv` di **ogni risposta ASCII di query** da quel punto in poi.
+Enables automatic saving to `lastres.csv` of **every ASCII query response** from that point onward.
 
 ```text
 @startstore [label]
 ```
 
-Dettagli:
-- Se `label` è omesso viene usato `AUTO`.
-- Il salvataggio viene effettuato dopo ogni query SCPI che produce `last`.
-- `label` può contenere spazi (es. `@startstore burn in` o `@startstore "burn in"`).
+Details:
+- If `label` is omitted, `AUTO` is used.
+- Saving occurs after every SCPI query that produces `last`.
+- `label` can contain spaces (e.g., `@startstore burn in` or `@startstore "burn in"`).
 
-Esempio:
+Example:
 ```text
 @startstore trend
 MEAS:VOLT?
@@ -273,32 +273,32 @@ MEAS:CURR?
 ```
 
 #### `@stopstore`
-Disabilita il salvataggio automatico attivato da `@startstore`.
+Disables automatic saving enabled by `@startstore`.
 
 ```text
 @stopstore
 ```
 
 #### `@comment`
-Salva una riga di commento in `lastres.csv` (utile per annotare eventi, step test, condizioni).
+Saves a comment row in `lastres.csv` (useful for annotating events, test steps, conditions).
 
 ```text
-@comment <testo libero>
+@comment <free text>
 ```
 
-Esempio:
+Example:
 ```text
-@comment Inizio sweep canale 1
+@comment Start channel 1 sweep
 ```
 
-### Note utili
+### Useful Notes
 
-- Una query SCPI (comando che termina con `?`) salva la risposta in `last`.
-- Una lettura binaria con `@readbin` salva i byte in `last_bin` (e azzera `last`).
-- Le risposte ASCII multi-riga vengono salvate correttamente in `lastres.csv` tramite quoting CSV (restano nello stesso record anche se contengono newline).
-- Sul transport seriale, il Combined Monitor applica una breve finestra di bufferizzazione dopo la query per ricomporre eventuali righe ASCII addizionali arrivate subito dopo la prima risposta.
-- Nel Combined Monitor, se una query seriale va in timeout, viene effettuato automaticamente un retry dopo 1s.
-- Se incolli uno script in una sola riga con sequenze letterali `\n` (es. `@conn ...\n@target ...\n*IDN?`), il monitor le converte automaticamente in nuove righe prima dell'esecuzione.
+- An SCPI query (command ending with `?`) stores the response in `last`.
+- A binary read with `@readbin` stores bytes in `last_bin` (and clears `last`).
+- Multi-line ASCII responses are correctly saved in `lastres.csv` using CSV quoting (they remain in the same record even if they contain newlines).
+- On serial transport, the Combined Monitor applies a short buffering window after a query to reassemble additional ASCII lines that arrive right after the first response.
+- In the Combined Monitor, if a serial query times out, a retry is automatically performed after 1 second.
+- If you paste a script in one line with literal `\n` sequences (e.g., `@conn ...\n@target ...\n*IDN?`), the monitor automatically converts them into real new lines before execution.
 
 ## 📄 License
 
