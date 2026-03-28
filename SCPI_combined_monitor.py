@@ -419,8 +419,9 @@ class CombinedScriptEngine:
 
     def _store_comment(self, text: str):
         target = self.current_target or ""
-        self._append_lastres_row(target, "@comment", "COMMENT", text)
-        self.logger("INFO", f"COMMENT salvato: {text}")
+        clean_text = text.lstrip("\r\n")
+        self._append_lastres_row(target, "@comment", "COMMENT", clean_text)
+        self.logger("INFO", f"COMMENT salvato: {clean_text}")
 
     def _save_binary(self, filename: str):
         if self.last_bin is None:
