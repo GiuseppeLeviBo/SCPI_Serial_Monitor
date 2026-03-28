@@ -90,7 +90,7 @@ Esempio script:
 MEAS:VOLT?
 @if last < 1 @halt
 ```
-
+ ![Example screenshot](Screenshot2.png)
 ## 🧠 Sintassi meta-comandi (`SCPI_combined_monitor.py`)
 
 Nel Combined Monitor ogni riga può essere:
