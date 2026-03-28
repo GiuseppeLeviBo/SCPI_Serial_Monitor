@@ -400,25 +400,48 @@ class CombinedScriptEngine:
     def _csv_sanitize(value: Optional[str]) -> str:
         if value is None:
             return "NOVAL"
-        return value
+        # Alcuni strumenti restituiscono multilinee come sequenze letterali "\n".
+        # Convertiamole in newline reali per mantenere la struttura del dato in CSV.
+        text = str(value)
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
 
     def _append_lastres_row(self, target: str, command: str, name: str, value: Optional[str]):
         ts = datetime.now().strftime("%d%m%Y %H:%M")
         with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
-            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
             writer.writerow([ts, target, command, name, self._csv_sanitize(value)])
+
+    def _append_lastres_block(self, target: str, command: str, name: str, value: Optional[str]):
+        """
+        Formato usato da @startstore:
+        - prima riga con soli metadati
+        - poi blocco dati su righe dedicate (senza quoting CSV)
+        """
+        ts = datetime.now().strftime("%d%m%Y %H:%M")
+        normalized = self._csv_sanitize(value)
+        with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
+            fp.write(f"{ts};{target};{command};{name}\n")
+            if not normalized:
+                fp.write("NOVAL\n")
+                return
+            for raw_line in normalized.splitlines():
+                fp.write(f"{raw_line}\n")
 
     def _store_value(self, name: str, value: Optional[str] = None):
         target = self.current_target or ""
         command = self.last_command or ""
         stored_value = self.last if value is None else value
-        self._append_lastres_row(target, command, name, stored_value)
+        if self.auto_store_enabled and value is not None:
+            self._append_lastres_block(target, command, name, stored_value)
+        else:
+            self._append_lastres_row(target, command, name, stored_value)
         self.logger("INFO", f"STORE: {name} [{target}]")
 
     def _store_comment(self, text: str):
         target = self.current_target or ""
-        self._append_lastres_row(target, "@comment", "COMMENT", text)
-        self.logger("INFO", f"COMMENT salvato: {text}")
+        clean_text = text.lstrip("\r\n")
+        self._append_lastres_row(target, "@comment", "COMMENT", clean_text)
+        self.logger("INFO", f"COMMENT salvato: {clean_text}")
 
     def _save_binary(self, filename: str):
         if self.last_bin is None:
@@ -547,14 +570,29 @@ class CombinedMonitorApp(tk.Tk):
 
     @staticmethod
     def _normalize_script_name(name: str) -> str:
-        return re.sub(r"\s+", " ", name).strip()
+        clean = name.replace("\\", "/")
+        parts = []
+        for raw_part in clean.split("/"):
+            normalized = re.sub(r"\s+", " ", raw_part).strip()
+            if normalized:
+                parts.append(normalized)
+        return "/".join(parts)
 
     @staticmethod
-    def _script_filename_from_name(name: str) -> str:
+    def _safe_path_part(name: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", name).strip("_")
         if not safe:
             safe = "script"
-        return f"{safe}.scpi"
+        return safe
+
+    @classmethod
+    def _script_relpath_from_name(cls, name: str) -> str:
+        parts = [p for p in cls._normalize_script_name(name).split("/") if p]
+        if not parts:
+            return "script.scpi"
+        safe_parts = [cls._safe_path_part(part) for part in parts]
+        safe_parts[-1] = f"{safe_parts[-1]}.scpi"
+        return str(Path(*safe_parts))
 
     def _load_script_index(self):
         SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -585,7 +623,7 @@ class CombinedMonitorApp(tk.Tk):
         rel_path = self.script_index.get(name)
         if rel_path:
             return SCRIPT_DIR / rel_path
-        return SCRIPT_DIR / self._script_filename_from_name(name)
+        return SCRIPT_DIR / self._script_relpath_from_name(name)
 
     def load_script(self):
         selected_name = self._choose_script_from_index_dialog()
@@ -635,7 +673,38 @@ class CombinedMonitorApp(tk.Tk):
             result["value"] = "__open_other__"
             dialog.destroy()
 
+        def remove_selected():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            selected = listbox.get(selection[0])
+            rel_path = self.script_index.get(selected)
+            if not rel_path:
+                return
+            delete_file = messagebox.askyesnocancel(
+                APP_NAME,
+                (
+                    f"Rimuovere '{selected}' dall'indice?\n\n"
+                    "Sì = rimuovi anche il file dal disco\n"
+                    "No = rimuovi solo dall'indice"
+                ),
+                parent=dialog,
+            )
+            if delete_file is None:
+                return
+            self.script_index.pop(selected, None)
+            self._save_script_index()
+            if delete_file:
+                path = SCRIPT_DIR / rel_path
+                with contextlib.suppress(Exception):
+                    path.unlink()
+            listbox.delete(selection[0])
+            if selected == self.script_name:
+                self.script_name = None
+            self._append_log("INFO", f"Script rimosso dall'indice: {selected}")
+
         ttk.Button(btns, text="Apri selezionato", command=choose_selected).pack(side="left")
+        ttk.Button(btns, text="Rimuovi selezionato", command=remove_selected).pack(side="left", padx=(6, 0))
         ttk.Button(btns, text="Apri altro...", command=choose_open_other).pack(side="left", padx=(6, 0))
         ttk.Button(btns, text="Annulla", command=dialog.destroy).pack(side="right")
 
@@ -664,11 +733,16 @@ class CombinedMonitorApp(tk.Tk):
         path = Path(selected_file)
         self._load_script_from_path(path)
 
-        inferred_name = self._normalize_script_name(path.stem)
-        if inferred_name and path.is_relative_to(SCRIPT_DIR):
-            self.script_index[inferred_name] = path.name
-            self.script_name = inferred_name
-            self._save_script_index()
+        if path.is_relative_to(SCRIPT_DIR):
+            relative_path = str(path.relative_to(SCRIPT_DIR))
+            rel_parts = list(path.relative_to(SCRIPT_DIR).parts)
+            if rel_parts:
+                rel_parts[-1] = Path(rel_parts[-1]).stem
+            inferred_name = self._normalize_script_name("/".join(rel_parts))
+            if inferred_name:
+                self.script_index[inferred_name] = relative_path
+                self.script_name = inferred_name
+                self._save_script_index()
 
     def _load_script_by_name(self, name: str):
         normalized_name = self._normalize_script_name(name)
@@ -684,7 +758,7 @@ class CombinedMonitorApp(tk.Tk):
         if normalized_name in self.script_index:
             path = self._script_path_from_name(normalized_name)
         else:
-            path = SCRIPT_DIR / self._script_filename_from_name(normalized_name)
+            path = SCRIPT_DIR / self._script_relpath_from_name(normalized_name)
         if not path.exists():
             raise ValueError(f"Script '{normalized_name}' non trovato in {path}")
         content = path.read_text(encoding="utf-8")
@@ -710,11 +784,25 @@ class CombinedMonitorApp(tk.Tk):
         self._save_script_by_name(self.script_name)
 
     def save_script_as(self):
-        proposed = self.script_name or ""
-        name = simpledialog.askstring(APP_NAME, "Nome script:", initialvalue=proposed, parent=self)
+        current_activity = ""
+        proposed_name = self.script_name or ""
+        if "/" in proposed_name:
+            current_activity, proposed_name = proposed_name.rsplit("/", 1)
+
+        activity = simpledialog.askstring(
+            APP_NAME,
+            "Attività (cartella opzionale):",
+            initialvalue=current_activity,
+            parent=self,
+        )
+        if activity is None:
+            return
+
+        name = simpledialog.askstring(APP_NAME, "Nome script:", initialvalue=proposed_name, parent=self)
         if not name:
             return
-        normalized_name = self._normalize_script_name(name)
+        full_name = f"{activity}/{name}" if activity else name
+        normalized_name = self._normalize_script_name(full_name)
         if not normalized_name:
             messagebox.showwarning(APP_NAME, "Il nome script non può essere vuoto.")
             return
@@ -722,11 +810,12 @@ class CombinedMonitorApp(tk.Tk):
         self._save_script_by_name(normalized_name)
 
     def _save_script_by_name(self, name: str):
-        filename = self._script_filename_from_name(name)
-        self.script_index[name] = filename
+        rel_path = self._script_relpath_from_name(name)
+        self.script_index[name] = rel_path
         path = self._script_path_from_name(name)
         try:
             content = self.script_text.get("1.0", "end-1c")
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             self._save_script_index()
             self._append_log("INFO", f"Script salvato: {name} ({path})")
