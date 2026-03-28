@@ -400,9 +400,10 @@ class CombinedScriptEngine:
     def _csv_sanitize(value: Optional[str]) -> str:
         if value is None:
             return "NOVAL"
-        clean = str(value).replace("\r\n", "\n").replace("\r", "\n")
-        clean = clean.strip("\n")
-        return clean.replace("\n", r"\n")
+        # Alcuni strumenti restituiscono multilinee come sequenze letterali "\n".
+        # Convertiamole in newline reali per mantenere la struttura del dato in CSV.
+        text = str(value)
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
 
     def _append_lastres_row(self, target: str, command: str, name: str, value: Optional[str]):
         ts = datetime.now().strftime("%d%m%Y %H:%M")
