@@ -68,237 +68,429 @@ Macros allow you to automate testing sequences.
 When interfacing with embedded devices, an active background reader thread can accidentally "steal" bytes meant for a synchronous `query()`. This application solves this by wrapping I/O operations and the background reader loop in a `threading.Lock()`. This guarantees that when a query is sent, the UI waits safely, the background reader is paused, and the instrument's response is captured correctly without data corruption.
 
 
-## 🧩 Combined Monitor (NEW)
+## 🧩 Combined Monitor V2 (`SCPI_combined_monitor_V2.py`)
 
-The repository also includes `SCPI_combined_monitor.py`, a hybrid monitor that combines:
-- the live monitoring logic from the serial monitor,
-- the scripting/meta-command language from the core engine (`@conn`, `@target`, `@wait`, `@if`, `@halt`, `@call`, `@rts`, `@store`, `@readbin`, `@savebin`) with extensions `@startstore`, `@stopstore`, `@comment`.
+`SCPI_combined_monitor_V2.py` is the advanced Combined Monitor: it includes a multi-tab editor, workspace-based `.scpi` files, a DSL with **global/local static variables**, full flow control, and an integrated **step-by-step debugger**.
 
 Quick start:
 
 ```bash
-python SCPI_combined_monitor.py
+python SCPI_combined_monitor_V2.py
 ```
 
-Example script:
+---
 
+## 🏗️ V2 Architecture
+
+V2 is built around two main components:
+
+1. **GUI (`CombinedMonitorApp`)**
+   - Open project folder.
+   - Browse `.scpi` files.
+   - Multi-tab editor with Save/Save As.
+   - Runtime log.
+   - Debug panel (variables + current-line highlight).
+
+2. **Engine (`CombinedScriptEngine`)**
+   - Line-by-line DSL execution.
+   - Multi-script call stack (`@call` / `@script`).
+   - Variable scoping (global + per-script local static).
+   - Loops (`@loop`, `@while`, `@break`).
+   - Numeric operations (`@inc`, `@eval`).
+   - ASCII/binary acquisition (`@readbin`, `@savebin`).
+   - CSV logging (`@store`, `@startstore`, `@comment`).
+
+---
+
+## 🧠 DSL V2: Core Rules
+
+Each line can be:
+- a **meta-command** (`@...`), or
+- a standard **SCPI command** (`*IDN?`, `MEAS:VOLT?`, ...).
+
+Supported comments:
 ```text
-@conn gen serial COM3 115200
-@target gen
-@wait 1
-*IDN?
-MEAS:VOLT?
-@if last < 1 @halt
+# this line is ignored
 ```
- ![Example screenshot](Screenshot2.png)
-## 🧠 Meta-command Syntax (`SCPI_combined_monitor.py`)
 
-In the Combined Monitor, each line can be:
-- a **meta-command** (starts with `@`), or
-- a regular **SCPI command** (e.g., `*IDN?`, `MEAS:VOLT?`).
+### Value Resolution (`_resolve_value`)
 
-### Available Commands
+When the DSL expects a value, resolution order is:
 
-#### `@conn`
-Creates a connection and registers it with a name (target).
+1. Quoted strings (`"abc"`, `'abc'`) ➜ literal string.
+2. `last` ➜ last query response (numeric if convertible, otherwise string).
+3. Variable name ➜ scope lookup (current-script local first, then global).
+4. Numeric literal (`10`, `3.14`).
+5. If still unresolved ➜ explicit error (no silent fallback to raw string).
 
+> Note: if you want plain text that is not numeric, always quote it.
+
+---
+
+## 🌍 Variable Scope (Global vs Local Static)
+
+### `@var` (local static)
+```text
+@var name value
+```
+- Creates/updates a **local variable for the current script**.
+- Locals are **static per script file**: they remain tied to that script name across nested `@call`s.
+
+### `@gvar` (global)
+```text
+@gvar name value
+```
+- Creates/updates a global variable shared by all scripts in the run.
+
+### Lookup (`_get_var`)
+Precedence order:
+1. current-script locals
+2. globals
+
+### `@inc`
+```text
+@inc name [step]
+```
+- Increments an existing variable (`step` defaults to `1`).
+- Raises an error if variable is missing or non-numeric.
+- Updates the variable in its original scope (local or global).
+
+### `@eval`
+```text
+@eval dest = expression
+```
+- Evaluates a math expression in a safe environment (`math` functions enabled, builtins disabled).
+- Supports `^` as power alias (`**`).
+- Variables are case-insensitive.
+- Assignment rule:
+  - if `dest` exists globally (and is not shadowed by current local), update global;
+  - otherwise create/update a local variable in current script.
+
+Example:
+```text
+@gvar gain 2
+@var x 3
+@eval y = sin(x) * gain + 10
+```
+
+---
+
+## 🔀 Flow Control
+
+### Conditions
+```text
+@if <left> <op> <right> <action>
+```
+Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`.
+
+Action can be:
+- another meta-command (`@halt`, `@wait`, `@store`, ...), or
+- a SCPI command.
+
+### Variable existence
+```text
+@ifdef name <action>
+@ifndef name <action>
+```
+
+### Counted loop
+```text
+@loop N
+  ...
+@endloop
+```
+- `N` is resolved via `_resolve_value`.
+- Nesting supported.
+
+### Conditional loop
+```text
+@while <left> <op> <right>
+  ...
+@endwhile
+```
+- If condition is false at entry, the block is skipped until matching `@endwhile`.
+
+### `@break`
+```text
+@break
+```
+- Forces exit from current loop (`@loop` or `@while`).
+
+### `@halt`
+```text
+@halt
+```
+- Stops script execution immediately.
+
+---
+
+## 📡 Connections and I/O
+
+### `@conn`
 ```text
 @conn <name> serial <port> [baud=9600] [timeout_s=2.0] [terminator=\n]
 @conn <name> visa <resource> [timeout_s=2.0] [backend=auto] [terminator=\n]
 @conn <name> socket <host:port | host> [port=5025] [timeout_s=2.0] [terminator=\n]
 ```
 
-Examples:
-```text
-@conn gen serial COM3 115200
-@conn dmm visa USB0::0x0957::0x1798::MY12345678::INSTR 3 auto \n
-@conn psu socket 192.168.1.55:5025 2 \n
-```
-
-#### `@target`
-Selects the active target where subsequent SCPI commands are sent.
-
+### `@target`
 ```text
 @target <name>
 ```
+Selects the active target for subsequent SCPI commands.
 
-Example:
-```text
-@target gen
-@wait 1
-*IDN?
-```
+### ASCII query behavior
+- Any SCPI command ending with `?` is treated as a query.
+- Reply is stored in `last`.
+- On serial transports:
+  - input flush before query (configurable),
+  - multiline buffering to rebuild split responses,
+  - automatic retry after timeout (1s).
 
-#### `@wait`
-Waits for a specified number of seconds.
-
-```text
-@wait <seconds>
-```
-
-Example:
-```text
-@wait 0.5
-```
-
-#### `@if`
-Evaluates a condition and, if true, executes a supported action.
-
-```text
-@if <left> <op> <right> <action>
-```
-
-- `<left>` can be `last` (last query response) or a literal value.
-- Supported `<op>` operators: `==`, `!=`, `>`, `<`, `>=`, `<=`.
-- Supported actions:
-  - `@halt`
-  - `@wait <seconds>`
-
-Examples:
-```text
-MEAS:VOLT?
-@if last < 1 @halt
-@if last >= 5 @wait 1
-```
-
-#### `@halt`
-Stops script execution.
-
-```text
-@halt
-```
-
-#### `@call` / `@script`
-Calls a saved script and creates a new frame in the execution stack.
-
-```text
-@call <script_name>
-@script <script_name>
-```
-
-Notes:
-- `@script` is an alias of `@call`.
-- The script is searched in the Combined Monitor JSON index (`~/.scpi_combined_scripts.json`) and in the `~/.scpi_macros` folder.
-- When the called script ends, execution automatically resumes in the caller.
-- Script names with spaces are supported both without quotes (`@call final calibration`) and with quotes (`@call "final calibration"`).
-
-Example:
-```text
-@call calibration
-MEAS:VOLT?
-```
-
-#### `@rts`
-Return To Script: forces an immediate return to the caller script (early exit from the current script).
-
-```text
-@rts
-```
-
-Typical use:
-```text
-MEAS:STAT?
-@if last != OK @rts
-```
-
-#### `@store`
-Saves the last textual value (`last`) in `lastres.csv` with timestamp, target, command, and measurement name.
-
-```text
-@store <label>
-```
-
-`<label>` can contain spaces (e.g., `@store channel 1 test` or `@store "channel 1 test"`).
-
-CSV row format:
-```text
-DDMMYYYY HH:MM; <target>; <last_command>; <label>; <value|NOVAL>
-```
-
-Example:
-```text
-MEAS:VOLT?
-@store volt
-```
-
-#### `@readbin`
-Arms binary reading: the **next SCPI command** is sent as a write and the response is captured as raw bytes in `last_bin`.
-
-```text
-@readbin
-```
-
-Example:
-```text
-@readbin
-WAV:DATA?
-```
-
-#### `@savebin`
-Saves the binary content read by `@readbin` to a file.
-
-```text
-@savebin <filename>
-```
-
-Behavior:
-- If no binary data is available, it raises an error.
-- The filename is automatically enriched as:
-  - `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`
-
-Example:
+### Binary flow
 ```text
 @readbin
 WAV:DATA?
 @savebin wave.bin
 ```
+- `@readbin` arms raw read for the *next* SCPI line.
+- Data is stored in `last_bin`.
+- `@savebin` writes `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`.
 
-#### `@startstore`
-Enables automatic saving to `lastres.csv` of **every ASCII query response** from that point onward.
+---
 
+## 📝 Result Logging (`lastres.csv`)
+
+Output file: `lastres.csv` in current working directory.
+
+CSV header:
+```text
+timestamp;target;command;name;value
+```
+
+### `@store`
+```text
+@store <label>
+@store <label> <explicit_value>
+```
+- Stores `last` (or explicit value) into CSV.
+
+### `@startstore` / `@stopstore`
 ```text
 @startstore [label]
-```
-
-Details:
-- If `label` is omitted, `AUTO` is used.
-- Saving occurs after every SCPI query that produces `last`.
-- `label` can contain spaces (e.g., `@startstore burn in` or `@startstore "burn in"`).
-
-Example:
-```text
-@startstore trend
-MEAS:VOLT?
-MEAS:CURR?
-```
-
-#### `@stopstore`
-Disables automatic saving enabled by `@startstore`.
-
-```text
 @stopstore
 ```
+- Automatic CSV save for each ASCII query response.
+- Default label: `AUTO`.
 
-#### `@comment`
-Saves a comment row in `lastres.csv` (useful for annotating events, test steps, conditions).
+### `@comment`
+```text
+@comment free text
+```
+- Inserts annotation row into CSV (`command=@comment`, `name=COMMENT`).
+
+---
+
+## 📚 Modular Scripts
+
+### `@call` / `@script`
+```text
+@call script_name
+@script script_name
+```
+- Equivalent aliases.
+- In V2, scripts are loaded from the **currently opened workspace**.
+- `.scpi` extension is appended automatically if missing.
+
+### `@rts`
+```text
+@rts
+```
+- Immediate return from current script to caller.
+
+---
+
+## 🐞 Integrated Debugger
+
+Start modes:
+- **Run**: continuous execution.
+- **Debug**: starts paused (step mode).
+
+Controls:
+- **Pause/Resume**: toggle step mode.
+- **Step**: execute exactly one line.
+- **Stop**: request safe stop.
+
+Variable panel shows:
+- always `last`,
+- globals,
+- all local static variables (with current script highlighted).
+
+Editor behavior:
+- highlights current executing line in yellow.
+
+---
+
+## ✅ Complete DSL V2 Example
 
 ```text
-@comment <free text>
+@conn dmm serial COM3 115200
+@target dmm
+
+@gvar limit 5
+@var i 0
+
+@loop 10
+MEAS:VOLT?
+@if last > limit @comment "threshold exceeded"
+@inc i
+@if i >= 10 @break
+@endloop
+
+@eval avg = (limit + i) / 2
+@store average avg
 ```
 
-Example:
-```text
-@comment Start channel 1 sweep
-```
+---
 
-### Useful Notes
+## 🧪 Full Test Plan (Test Cases)
 
-- An SCPI query (command ending with `?`) stores the response in `last`.
-- A binary read with `@readbin` stores bytes in `last_bin` (and clears `last`).
-- Multi-line ASCII responses are correctly saved in `lastres.csv` using CSV quoting (they remain in the same record even if they contain newlines).
-- On serial transport, the Combined Monitor applies a short buffering window after a query to reassemble additional ASCII lines that arrive right after the first response.
-- In the Combined Monitor, if a serial query times out, a retry is automatically performed after 1 second.
-- If you paste a script in one line with literal `\n` sequences (e.g., `@conn ...\n@target ...\n*IDN?`), the monitor automatically converts them into real new lines before execution.
+Below is a complete test suite designed to cover parser, DSL engine, I/O, and debugger behavior.
+
+### A) Parser and DSL syntax
+
+1. **Comments and blank lines**
+   - Input: script with `#` and blank lines.
+   - Expected: ignored, no error.
+
+2. **Quoted tokenization**
+   - Input: `@comment "phase 1: startup"`.
+   - Expected: full text preserved.
+
+3. **Malformed command error**
+   - Input: `@eval a 1+2` (missing `=`).
+   - Expected: error with script:line reference in log.
+
+4. **Undefined variable**
+   - Input: `@if x > 1 @halt` with undeclared `x`.
+   - Expected: explicit undefined-variable error.
+
+### B) Variable scope
+
+5. **Local precedence over global**
+   - Setup: `@gvar x 10`, then `@var x 3` in same script.
+   - Expected: lookup for `x` resolves to `3`.
+
+6. **Local static persistence per script**
+   - Setup: script A sets `@var k 1`, calls B, then returns to A.
+   - Expected: A's `k` is preserved.
+
+7. **Shared global across scripts**
+   - Setup: A sets `@gvar t 1`, B does `@inc t`.
+   - Expected: updated value visible in A.
+
+8. **`@inc` on non-numeric variable**
+   - Setup: `@var s "abc"`, then `@inc s`.
+   - Expected: typed numeric-conversion error.
+
+9. **`@eval` updates existing global destination**
+   - Setup: `@gvar p 1`, `@eval p = p + 1`.
+   - Expected: global is updated.
+
+10. **`@eval` creates local if destination is not global**
+   - Setup: `@eval q = 2+2`.
+   - Expected: `q` is local in current script.
+
+### C) Conditions and control flow
+
+11. **`@if` numeric true/false branches**
+12. **`@if` string comparisons (`==`, `!=`)**
+13. **`@ifdef` existing variable path**
+14. **`@ifndef` missing variable path**
+15. **`@loop` executes exact N iterations**
+16. **`@while` natural exit path**
+17. **`@break` inside nested loops (breaks current loop only)**
+18. **Error on `@endloop` without opener**
+19. **Error on `@break` outside loop**
+20. **`@halt` interrupts run immediately**
+
+### D) Call stack and modularity
+
+21. **Basic `@call` with existing file**
+22. **`@call` missing script**
+23. **`@script` alias behavior**
+24. **`@rts` early return**
+25. **`@rts` from root frame ends execution**
+26. **Multi-level nesting A→B→C with correct return PC**
+
+### E) Transports and targets
+
+27. **`@target` without `@conn`**
+   - Expected: target-not-connected error.
+
+28. **Serial connect defaults**
+29. **VISA connect with auto/ni/py backends**
+30. **Socket connect using `host:port` and split host+port formats**
+31. **SCPI command without active target**
+   - Expected: `No target selected` runtime error.
+
+### F) ASCII queries and serial robustness
+
+32. **Standard query populates `last`**
+33. **Write command resets `last`**
+34. **Serial multiline response reconstruction**
+35. **Serial timeout + successful retry**
+36. **Non-serial timeout propagates error (no retry)**
+37. **Serial pre-query flush enabled behavior**
+
+### G) Binary
+
+38. **`@readbin` + valid binary query**
+39. **`@savebin` without `last_bin` ➜ error**
+40. **Output filename format includes timestamp + target**
+41. **After `@readbin`, `last` must be `None`**
+
+### H) CSV logging
+
+42. **`lastres.csv` header creation on first store**
+43. **`@store label` saves `last`**
+44. **`@store label explicit_value` saves explicit value**
+45. **`@startstore` saves every query**
+46. **`@stopstore` disables autosave**
+47. **`@comment` appends comment row**
+48. **Newline sanitization (`\r\n` / `\r`)**
+49. **Multiline CSV value quoting correctness**
+
+### I) Debugger/UI workflow
+
+50. **Normal run: no `step_event` blocking**
+51. **Debug start: pause on first line**
+52. **Single-step advances exactly one line**
+53. **Pause↔Resume synchronization**
+54. **Stop during pause unblocks thread and exits**
+55. **Variable tab updates (`last`/global/local)**
+56. **Current-line highlight on correct tab**
+57. **No crash when script is not open in any tab**
+
+### J) Error handling and resilience
+
+58. **Runtime error log includes `script_name:L<line>`**
+59. **After runtime error, `stop_requested=True` and run ends**
+60. **`close_all()` tolerates disconnect exceptions**
+
+---
+
+## 🔧 Recommended Test Execution Strategy
+
+- **Engine unit tests**: mock transports (`SerialTransport`, `VisaTransport`, socket) + fake logger.
+- **DSL integration tests**: fixture scripts in a temporary workspace folder.
+- **UI smoke tests**: basic automated flow (open tab, run/debug, stop) where feasible.
+- **Minimal CI regression set**:
+  1. Variable scope (`@var/@gvar/@eval/@inc`)
+  2. Loops and call stack
+  3. Serial multiline query + retry
+  4. CSV logging and binary flow
+
 
 ## 📄 License
 
