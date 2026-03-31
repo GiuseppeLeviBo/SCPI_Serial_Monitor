@@ -72,6 +72,8 @@ When interfacing with embedded devices, an active background reader thread can a
 
 `SCPI_combined_monitor_V2.py` is the advanced Combined Monitor: it includes a multi-tab editor, workspace-based `.scpi` files, a DSL with **global/local static variables**, full flow control, and an integrated **step-by-step debugger**.
 
+![Example screenshot](Screenshot2.png)
+
 Quick start:
 
 ```bash
