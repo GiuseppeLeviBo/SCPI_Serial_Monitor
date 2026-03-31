@@ -31,6 +31,12 @@ class TargetConnection:
     transport: object
 
 
+
+
+# Assicurati di avere in cima al file i tuoi import originali:
+# from SCPI_serial_monitor import ( RawSocketScpiTransport, SerialTransport, VisaTransport, is_query_command )
+
+from typing import Any, Callable, Dict, List, Optional
 import math
 import operator
 import shlex
@@ -40,13 +46,10 @@ import csv
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
 
-# Assicurati di avere in cima al file i tuoi import originali:
-# from SCPI_serial_monitor import ( RawSocketScpiTransport, SerialTransport, VisaTransport, is_query_command )
 
 class CombinedScriptEngine:
-    """Motore script con supporto Variabili globali, Loop, Math e predisposizione Debugger."""
+    """Motore script vNext: Globali, Locali Statiche, Loop per-frame, Math e Debugger."""
 
     def __init__(
         self,
@@ -57,35 +60,40 @@ class CombinedScriptEngine:
         self.logger = logger
         self.history_logger = history_logger
         self.script_loader = script_loader
-        
+
         # --- Stato Connessioni e Strumenti ---
         self.targets: Dict[str, TargetConnection] = {}
         self.current_target: Optional[str] = None
-        
+
         self.last: Optional[str] = None
         self.last_bin: Optional[bytes] = None
         self.last_command: Optional[str] = None
         self.readbin_armed = False
-        
-        # --- Stato del DSL (Variabili e Loop) ---
-        self.variables: Dict[str, any] = {}
-        self.loop_stack: List[Dict[str, any]] = []
-        self.call_stack: List[Dict[str, object]] =[]
-        
+
+        # --- Stato del DSL vNext ---
+        self.global_vars: Dict[str, Any] = {}
+        # Struttura: { "script_name.scpi": { "var_name": value } }
+        self.local_vars: Dict[str, Dict[str, Any]] = {}
+        self.call_stack: List[Dict[str, Any]] =[]
+
         # --- Predisposizione Debugger e UI ---
         self.stop_requested = False
+        self.step_mode = False  # Se True, il motore si ferma ad ogni riga
         self.step_event = threading.Event()
-        self.step_event.set()  # Di default corre libero
-        self.breakpoints: set[int] = set() 
+        self.step_event.set()   # Di default corre libero
+        self.breakpoints: set[int] = set()
         self.on_state_change: Optional[Callable[[], None]] = None
         self.prompt_callback: Optional[Callable[[str], None]] = None
-        
+
         # --- Impostazioni di Logging e Timeout ---
         self.auto_store_enabled = False
         self.auto_store_label = "AUTO"
         self.serial_query_retry_delay_s = 1.0
         self.serial_pre_query_flush = True
         self.serial_multiline_idle_s = 0.12
+
+        # File CSV risultati
+        self.lastres_path = Path.cwd() / "lastres.csv"
 
         # Ambiente sicuro per @eval (solo funzioni matematiche standard)
         self._math_env = {k: v for k, v in math.__dict__.items() if not k.startswith("__")}
@@ -98,11 +106,19 @@ class CombinedScriptEngine:
         self.stop_requested = False
         self.readbin_armed = False
         self.call_stack =[]
-        self.variables.clear()
-        self.loop_stack.clear()
-        self.step_event.set()
+        
+        # Reset vNext: Pulisce globali e locali di TUTTI gli script
+        self.global_vars.clear()
+        self.local_vars.clear()
+        
         self.auto_store_enabled = False
         self.auto_store_label = "AUTO"
+        
+        # Se partiamo in Debug (step_mode=True), il semaforo parte rosso!
+        if getattr(self, "step_mode", False):
+            self.step_event.clear()
+        else:
+            self.step_event.set()
 
     def close_all(self):
         for tc in self.targets.values():
@@ -113,27 +129,59 @@ class CombinedScriptEngine:
         self.targets.clear()
 
     # ==========================================
-    # CORE DSL: Variabili ed Espressioni
+    # CORE DSL vNext: Variabili, Scope e Lookup
     # ==========================================
-    def _resolve_value(self, val_str: str) -> any:
-        """Converte una stringa in numero, variabile o mantiene la stringa."""
-        val_str = val_str.strip(" '\"")
-        v_lower = val_str.lower()
+    def _get_var(self, name: str) -> tuple[bool, Any, str]:
+        """Ritorna: (Esiste?, Valore, Scope['local'|'global']) secondo le regole di Lookup."""
+        name = name.lower()
+        if not self.call_stack:
+            return False, None, ""
         
+        curr_script = self.call_stack[-1]["name"]
+        
+        # 1. Cerca in locale statica
+        if curr_script in self.local_vars and name in self.local_vars[curr_script]:
+            return True, self.local_vars[curr_script][name], "local"
+            
+        # 2. Cerca in globale
+        if name in self.global_vars:
+            return True, self.global_vars[name], "global"
+            
+        # 3. Non esiste
+        return False, None, ""
+
+    def _resolve_value(self, val_str: str) -> Any:
+        val_str = val_str.strip()
+
+        # 1. Stringhe letterali (esplicitamente tra virgolette)
+        if (val_str.startswith('"') and val_str.endswith('"')) or \
+           (val_str.startswith("'") and val_str.endswith("'")):
+            return val_str[1:-1]
+
+        v_lower = val_str.lower()
+
+        # 2. Parola chiave 'last'
         if v_lower == "last":
-            val_str = self.last if self.last is not None else "0"
-            v_lower = str(val_str).lower()
-            
-        if v_lower in self.variables:
-            return self.variables[v_lower]
-            
+            val = self.last if self.last is not None else "0"
+            try: return float(val)
+            except (ValueError, TypeError): return str(val)
+
+        # 3. Lookup Variabili (Locali / Globali)
+        exists, val, _ = self._get_var(v_lower)
+        if exists:
+            return val
+
+        # 4. Numeri letterali
         try:
             return float(val_str)
         except ValueError:
-            return val_str
+            # 5. Specifica vNext: Errore Esplicito! Nessun fallback a stringa.
+            raise ValueError(
+                f"Variabile '{val_str}' non definita. "
+                f"(Se intendevi una stringa testuale, usa le virgolette: \"{val_str}\")"
+            )
 
     def _evaluate_condition(self, left_raw: str, op: str, right_raw: str) -> bool:
-        """Valuta espressioni logiche per @if e @while."""
         left = self._resolve_value(left_raw)
         right = self._resolve_value(right_raw)
 
@@ -147,27 +195,26 @@ class CombinedScriptEngine:
         ops = {
             "==": operator.eq, "!=": operator.ne,
             ">": operator.gt, "<": operator.lt,
-            ">=": operator.ge, "<=": operator.le
+            ">=": operator.ge, "<=": operator.le,
         }
-        
+
         if op not in ops:
             raise ValueError(f"Operatore non supportato: {op}")
-            
+
         return ops[op](left, right)
 
     def _skip_to_endloop(self):
-        """Avanza il Program Counter ignorando tutto fino al prossimo @endloop/endwhile."""
         frame = self.call_stack[-1]
         lines = frame["lines"]
         pc = frame["pc"]
         nesting = 1
-        
+
         while pc < len(lines):
             line = lines[pc].strip().lower()
             if not line or line.startswith("#"):
                 pc += 1
                 continue
-                
+
             if line.startswith("@loop") or line.startswith("@while"):
                 nesting += 1
             elif line.startswith("@endloop") or line.startswith("@endwhile"):
@@ -176,6 +223,7 @@ class CombinedScriptEngine:
                     frame["pc"] = pc + 1
                     return
             pc += 1
+
         raise ValueError("Raggiunta fine file senza trovare @endloop o @endwhile")
 
     # ==========================================
@@ -189,8 +237,15 @@ class CombinedScriptEngine:
         return value.encode("unicode_escape").decode("ascii")
 
     def _build_conn_history_command(
-        self, name: str, conn_type: str, endpoint: str, timeout_s: float, terminator: str,
-        baud: Optional[int] = None, backend: Optional[str] = None, socket_port: Optional[int] = None
+        self,
+        name: str,
+        conn_type: str,
+        endpoint: str,
+        timeout_s: float,
+        terminator: str,
+        baud: Optional[int] = None,
+        backend: Optional[str] = None,
+        socket_port: Optional[int] = None,
     ) -> str:
         if conn_type == "serial":
             return f"@conn {name} serial {endpoint} {baud} {timeout_s:g} {self._escape_terminator(terminator)}"
@@ -203,7 +258,7 @@ class CombinedScriptEngine:
 
     def cmd_conn(self, args):
         if len(args) < 3:
-            raise ValueError("@conn richiede: nome tipo endpoint [parametri]")
+            raise ValueError("@conn richiede: nome tipo endpoint[parametri]")
 
         name, conn_type, endpoint = args[0], args[1].lower(), args[2]
         params = args[3:]
@@ -214,14 +269,18 @@ class CombinedScriptEngine:
             timeout_s = float(params[1]) if len(params) > 1 else 2.0
             terminator = self._parse_terminator(params[2]) if len(params) > 2 else "\n"
             transport = SerialTransport(endpoint, baud, timeout_s, terminator)
-            history_cmd = self._build_conn_history_command(name, conn_type, endpoint, timeout_s, terminator, baud=baud)
+            history_cmd = self._build_conn_history_command(
+                name, conn_type, endpoint, timeout_s, terminator, baud=baud
+            )
 
         elif conn_type == "visa":
             timeout_s = float(params[0]) if params else 2.0
             backend = params[1] if len(params) > 1 else "auto"
             terminator = self._parse_terminator(params[2]) if len(params) > 2 else "\n"
             transport = VisaTransport(endpoint, int(timeout_s * 1000), terminator, backend)
-            history_cmd = self._build_conn_history_command(name, conn_type, endpoint, timeout_s, terminator, backend=backend)
+            history_cmd = self._build_conn_history_command(
+                name, conn_type, endpoint, timeout_s, terminator, backend=backend
+            )
 
         elif conn_type == "socket":
             if ":" in endpoint:
@@ -233,7 +292,9 @@ class CombinedScriptEngine:
             timeout_s = float(params[0]) if params else 2.0
             terminator = self._parse_terminator(params[1]) if len(params) > 1 else "\n"
             transport = RawSocketScpiTransport(host, port, timeout_s, terminator)
-            history_cmd = self._build_conn_history_command(name, conn_type, host, timeout_s, terminator, socket_port=port)
+            history_cmd = self._build_conn_history_command(
+                name, conn_type, host, timeout_s, terminator, socket_port=port
+            )
 
         else:
             raise ValueError(f"Transport sconosciuto: {conn_type}")
@@ -245,9 +306,11 @@ class CombinedScriptEngine:
             self.history_logger(history_cmd)
 
     def cmd_target(self, args):
-        if not args: raise ValueError("@target richiede il nome del target")
+        if not args:
+            raise ValueError("@target richiede il nome del target")
         name = args[0]
-        if name not in self.targets: raise ValueError(f"Target '{name}' non connesso")
+        if name not in self.targets:
+            raise ValueError(f"Target '{name}' non connesso")
         self.current_target = name
         self.last = None
         self.logger("INFO", f"TARGET -> {name}")
@@ -256,7 +319,8 @@ class CombinedScriptEngine:
     # ESECUZIONE SCRIPT E LOOP PRINCIPALE
     # ==========================================
     def _load_script_lines(self, script_name: str) -> List[str]:
-        if not self.script_loader: raise ValueError("Script loader non configurato")
+        if not self.script_loader:
+            raise ValueError("Script loader non configurato")
         return list(self.script_loader(script_name))
 
     def _push_script(self, script_name: str, lines: List[str]):
@@ -264,6 +328,7 @@ class CombinedScriptEngine:
             "name": script_name,
             "lines": lines,
             "pc": 0,
+            "loop_stack":[],  # Ogni frame ha i suoi loop privati!
         })
         self.logger("INFO", f"CALL -> {script_name}")
 
@@ -272,9 +337,17 @@ class CombinedScriptEngine:
         self._push_script(entry_script_name, list(lines))
 
         while self.call_stack and not self.stop_requested:
-            # BLOCCO DEBUGGER: aspetta qui finché la UI non dice "vai"
+            # 1. Avvisa la GUI dello stato corrente (variabili e PC) PRIMA di fermarsi
+            if self.on_state_change:
+                self.on_state_change()
+
+            # 2. BLOCCO DEBUGGER: aspetta qui finché la UI non dice "vai"
             self.step_event.wait()
-            
+
+            # 3. Se siamo in step-by-step, richiudiamo subito il semaforo per il prossimo giro
+            if getattr(self, "step_mode", False):
+                self.step_event.clear()
+
             frame = self.call_stack[-1]
             script_name = str(frame["name"])
             script_lines = frame["lines"]
@@ -286,10 +359,6 @@ class CombinedScriptEngine:
 
             raw = script_lines[pc]
             frame["pc"] = pc + 1
-            
-            # AGGIORNAMENTO UI: Lampeggio riga corrente (futuro)
-            if self.on_state_change:
-                self.on_state_change()
 
             if self.stop_requested:
                 self.logger("WARN", "Esecuzione interrotta")
@@ -313,120 +382,190 @@ class CombinedScriptEngine:
     # ==========================================
     def _run_meta(self, line: str):
         tokens = shlex.split(line)
-        if not tokens: return
+        if not tokens:
+            return
         cmd = tokens[0][1:].lower()
         args = tokens[1:]
-
-        # Connessioni
-        if cmd == "conn": self.cmd_conn(args)
-        elif cmd == "target": self.cmd_target(args)
         
-        # Flusso e Tempo
+        curr_script = self.call_stack[-1]["name"]
+
+        if cmd == "conn":
+            self.cmd_conn(args)
+        elif cmd == "target":
+            self.cmd_target(args)
+
         elif cmd == "wait":
             delay = float(self._resolve_value(args[0])) if args else 0.0
             self.logger("INFO", f"WAIT: {delay}s")
             time.sleep(delay)
+
         elif cmd == "halt":
             self.stop_requested = True
             self.logger("INFO", "HALT")
-            
-        # Variabili
+
+        # --- vNext: Variabili ---
         elif cmd == "var":
-            if len(args) < 2: raise ValueError("@var richiede: nome valore")
+            if len(args) < 2:
+                raise ValueError("@var richiede: nome valore")
             var_name = args[0].lower()
             val = self._resolve_value(" ".join(args[1:]))
-            self.variables[var_name] = val
-            self.logger("INFO", f"VAR: {var_name} = {val}")
+            if curr_script not in self.local_vars:
+                self.local_vars[curr_script] = {}
+            self.local_vars[curr_script][var_name] = val
+            self.logger("INFO", f"VAR (local): {var_name} = {val}")
+
+        elif cmd == "gvar":
+            if len(args) < 2:
+                raise ValueError("@gvar richiede: nome valore")
+            var_name = args[0].lower()
+            val = self._resolve_value(" ".join(args[1:]))
+            self.global_vars[var_name] = val
+            self.logger("INFO", f"GVAR (global): {var_name} = {val}")
 
         elif cmd == "inc":
-            if not args: raise ValueError("@inc richiede il nome della variabile")
+            if not args:
+                raise ValueError("@inc richiede il nome della variabile")
             var_name = args[0].lower()
             step = float(self._resolve_value(args[1])) if len(args) > 1 else 1.0
-            if var_name in self.variables:
-                self.variables[var_name] += step
-                self.logger("INFO", f"VAR INC: {var_name} = {self.variables[var_name]}")
-            else:
+            
+            exists, val, scope = self._get_var(var_name)
+            if not exists:
                 raise ValueError(f"Variabile '{var_name}' non definita per @inc")
+                
+            # Controllo tipo: si assicura che val sia un numero!
+            try:
+                val_num = float(val)
+            except (ValueError, TypeError):
+                raise ValueError(f"Impossibile incrementare '{var_name}': il valore attuale '{val}' non è numerico.")
+                
+            new_val = val_num + step
+            if scope == "local":
+                self.local_vars[curr_script][var_name] = new_val
+            else:
+                self.global_vars[var_name] = new_val
+            self.logger("INFO", f"INC ({scope}): {var_name} = {new_val}")
 
         elif cmd == "eval":
             if len(args) < 3 or args[1] != "=":
-                raise ValueError("@eval formato: @eval dest = espressione")
+                raise ValueError("@eval formato: dest = expr")
             var_dest = args[0].lower()
-            expr = " ".join(args[2:]).replace("^", "**") # Converte potenza
-            
-            # Creiamo un ambiente per eval() sicuro e "Case-Insensitive"
+            expr = " ".join(args[2:]).replace("^", "**")
+
             eval_env = {"__builtins__": {}}
             eval_env.update(self._math_env)
-            # Aggiungiamo le funzioni math anche in maiuscolo (es: SIN e sin)
             eval_env.update({k.upper(): v for k, v in self._math_env.items()})
-            
-            # Passiamo a eval() le variabili in minuscolo e maiuscolo
-            for k, v in self.variables.items():
+
+            # Inseriamo prima le globali, poi le sovrascriviamo con le locali per dare precedenza
+            for k, v in self.global_vars.items():
                 eval_env[k.lower()] = v
                 eval_env[k.upper()] = v
-                
+            
+            if curr_script in self.local_vars:
+                for k, v in self.local_vars[curr_script].items():
+                    eval_env[k.lower()] = v
+                    eval_env[k.upper()] = v
+
             try:
                 res = eval(expr, eval_env)
-                self.variables[var_dest] = res
-                self.logger("INFO", f"EVAL: {var_dest} = {res}")
             except NameError as e:
-                # Ora se sbagliamo nome restituisce un errore chiaro
                 raise ValueError(f"Variabile non trovata in '{expr}': {e}")
             except Exception as e:
                 raise ValueError(f"Errore espressione '{expr}': {e}")
 
-        # Condizioni e Loop
+            # Assegnazione intelligente (come da specifica): aggiorna globale se esiste lì, sennò crea locale
+            exists, _, scope = self._get_var(var_dest)
+            if exists and scope == "global" and var_dest not in self.local_vars.get(curr_script, {}):
+                self.global_vars[var_dest] = res
+                self.logger("INFO", f"EVAL (global): {var_dest} = {res}")
+            else:
+                if curr_script not in self.local_vars:
+                    self.local_vars[curr_script] = {}
+                self.local_vars[curr_script][var_dest] = res
+                self.logger("INFO", f"EVAL (local): {var_dest} = {res}")
+
+        # --- vNext: Controllo Esistenza ---
+        elif cmd in ("ifdef", "ifndef"):
+            if len(args) < 2:
+                raise ValueError(f"@{cmd} formato: nome azione")
+            var_name = args[0].lower()
+            exists, _, _ = self._get_var(var_name)
+            
+            if (cmd == "ifdef" and exists) or (cmd == "ifndef" and not exists):
+                action = " ".join(args[1:])
+                self.logger("INFO", f"{cmd.upper()} TRUE: '{action}'")
+                if action.startswith("@"):
+                    self._run_meta(action)
+                else:
+                    self._run_command(action)
+
         elif cmd == "if":
-            if len(args) < 4: raise ValueError("@if formato: @if <left> <op> <right> <azione>")
+            if len(args) < 4:
+                raise ValueError("@if formato: @if <left> <op> <right> <azione>")
             if self._evaluate_condition(args[0], args[1], args[2]):
                 action_line = " ".join(args[3:])
                 self.logger("INFO", f"IF TRUE: '{action_line}'")
-                if action_line.startswith("@"): self._run_meta(action_line)
-                else: self._run_command(action_line)
+                if action_line.startswith("@"):
+                    self._run_meta(action_line)
+                else:
+                    self._run_command(action_line)
 
         elif cmd == "loop":
-            if not args: raise ValueError("@loop richiede numero iterazioni")
+            if not args:
+                raise ValueError("@loop richiede numero iterazioni")
             count = int(self._resolve_value(args[0]))
-            self.loop_stack.append({
-                "type": "loop", "start_pc": self.call_stack[-1]["pc"], "remaining": count
+            frame = self.call_stack[-1]
+            frame["loop_stack"].append({
+                "type": "loop",
+                "start_pc": frame["pc"],
+                "remaining": count,
             })
             self.logger("INFO", f"LOOP START: {count} iterazioni")
 
         elif cmd == "while":
-            if len(args) < 3: raise ValueError("@while richiede: <left> <op> <right>")
-            self.loop_stack.append({
-                "type": "while", "start_pc": self.call_stack[-1]["pc"], "args": args
+            if len(args) < 3:
+                raise ValueError("@while richiede: <left> <op> <right>")
+            frame = self.call_stack[-1]
+            frame["loop_stack"].append({
+                "type": "while",
+                "start_pc": frame["pc"],
+                "args": args,
             })
             if not self._evaluate_condition(args[0], args[1], args[2]):
                 self._skip_to_endloop()
 
         elif cmd in ("endloop", "endwhile"):
-            if not self.loop_stack: raise ValueError(f"@{cmd} senza blocco di apertura")
-            curr = self.loop_stack[-1]
+            frame = self.call_stack[-1]
+            loop_stack = frame["loop_stack"]
+            if not loop_stack:
+                raise ValueError(f"@{cmd} senza blocco di apertura")
             
+            curr = loop_stack[-1]
+
             if curr["type"] == "loop":
                 curr["remaining"] -= 1
                 if curr["remaining"] > 0:
-                    self.call_stack[-1]["pc"] = curr["start_pc"]
+                    frame["pc"] = curr["start_pc"]
                 else:
-                    self.loop_stack.pop()
+                    loop_stack.pop()
                     self.logger("INFO", "LOOP END")
-                    
+
             elif curr["type"] == "while":
                 args = curr["args"]
                 if self._evaluate_condition(args[0], args[1], args[2]):
-                    self.call_stack[-1]["pc"] = curr["start_pc"]
+                    frame["pc"] = curr["start_pc"]
                 else:
-                    self.loop_stack.pop()
+                    loop_stack.pop()
                     self.logger("INFO", "WHILE END")
 
         elif cmd == "break":
-            if not self.loop_stack: raise ValueError("@break fuori da un loop")
-            self.loop_stack.pop()
+            frame = self.call_stack[-1]
+            loop_stack = frame["loop_stack"]
+            if not loop_stack:
+                raise ValueError("@break fuori da un loop")
+            loop_stack.pop()
             self._skip_to_endloop()
             self.logger("INFO", "BREAK: Uscita forzata dal loop")
 
-        # UI e Salvataggio dati
         elif cmd == "prompt":
             msg = " ".join(args).strip("\"'")
             self.logger("WARN", f"PROMPT: {msg}")
@@ -437,42 +576,49 @@ class CombinedScriptEngine:
             if len(args) == 0:
                 self._store_value("LAST")
             elif len(args) == 1:
-                # Comportamento originale: @store ETICHETTA (salva 'last')
                 self._store_value(args[0])
             else:
-                # NUOVO: @store ETICHETTA VARIABILE (es: @store Risultato_Math RISULTATO)
                 label = args[0]
                 val = self._resolve_value(" ".join(args[1:]))
                 self._store_value(label, str(val))
+                
         elif cmd == "startstore":
             self.auto_store_enabled = True
-            if args: self.auto_store_label = " ".join(args).strip()
+            if args:
+                self.auto_store_label = " ".join(args).strip()
             self.logger("INFO", f"STARTSTORE: attivo (label={self.auto_store_label})")
+
         elif cmd == "stopstore":
             self.auto_store_enabled = False
             self.logger("INFO", "STOPSTORE: disattivato")
+
         elif cmd == "comment":
             text = " ".join(args).strip()
-            if not text: raise ValueError("@comment richiede un testo")
+            if not text:
+                raise ValueError("@comment richiede un testo")
             self._store_comment(text)
-            
-        # Funzioni e binario
+
         elif cmd in ("call", "script"):
             script_name = " ".join(args).strip().strip("()")
             lines = self._load_script_lines(script_name)
             self._push_script(script_name, lines)
+
         elif cmd == "rts":
             if self.call_stack:
                 ended = self.call_stack.pop()
                 self.logger("INFO", f"RTS <- {ended['name']}")
             if not self.call_stack:
                 self.stop_requested = True
+
         elif cmd == "readbin":
             self.readbin_armed = True
             self.logger("INFO", "READBIN armato")
+
         elif cmd == "savebin":
-            if not args: raise ValueError("@savebin richiede un filename")
+            if not args:
+                raise ValueError("@savebin richiede un filename")
             self._save_binary(args[0])
+
         else:
             self.logger("WARN", f"Meta comando non supportato: {line}")
 
@@ -501,9 +647,12 @@ class CombinedScriptEngine:
             chunks: List[bytes] =[]
             deadline = time.time() + getattr(transport, "timeout", 2.0)
             while time.time() < deadline:
-                try: chunk = sock.recv(4096)
-                except Exception: break
-                if not chunk: break
+                try:
+                    chunk = sock.recv(4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
                 chunks.append(chunk)
             return b"".join(chunks)
 
@@ -511,58 +660,60 @@ class CombinedScriptEngine:
 
     def _query_with_buffered_multiline(self, transport, cmd: str) -> str:
         first = transport.query(cmd)
-        if not isinstance(transport, SerialTransport): return first
+        if not isinstance(transport, SerialTransport):
+            return first
 
-        lines: List[str] =[first] if first is not None else[]
+        lines: List[str] = [first] if first is not None else[]
         pending = ""
         idle_deadline = time.time() + self.serial_multiline_idle_s
+
         while time.time() < idle_deadline:
             extra = transport.read_available()
             if not extra:
                 time.sleep(0.01)
                 continue
+
             idle_deadline = time.time() + self.serial_multiline_idle_s
             pending += extra.replace("\r\n", "\n").replace("\r", "\n")
             chunks = pending.split("\n")
             pending = chunks.pop() if chunks else ""
+
             for raw_line in chunks:
                 clean = raw_line.strip()
-                if clean: lines.append(clean)
+                if clean:
+                    lines.append(clean)
 
         tail = pending.strip()
-        if tail: lines.append(tail)
+        if tail:
+            lines.append(tail)
+
         return "\n".join(lines).strip()
 
     @staticmethod
     def _csv_sanitize(value: Optional[str]) -> str:
-        if value is None: return "NOVAL"
-        return str(value).replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+        if value is None:
+            return "NOVAL"
+        return str(value).replace("\r\n", "\n").replace("\r", "\n")
+
+    def _ensure_lastres_header(self):
+        if self.lastres_path.exists() and self.lastres_path.stat().st_size > 0:
+            return
+        with open(self.lastres_path, "w", newline="", encoding="utf-8") as fp:
+            writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+            writer.writerow(["timestamp", "target", "command", "name", "value"])
 
     def _append_lastres_row(self, target: str, command: str, name: str, value: Optional[str]):
-        ts = datetime.now().strftime("%d%m%Y %H:%M")
-        with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
+        self._ensure_lastres_header()
+        ts = datetime.now().strftime("%d%m%Y %H:%M:%S")
+        with open(self.lastres_path, "a", newline="", encoding="utf-8") as fp:
             writer = csv.writer(fp, delimiter=";", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
             writer.writerow([ts, target, command, name, self._csv_sanitize(value)])
-
-    def _append_lastres_block(self, target: str, command: str, name: str, value: Optional[str]):
-        ts = datetime.now().strftime("%d%m%Y %H:%M")
-        normalized = self._csv_sanitize(value)
-        with open("lastres.csv", "a", newline="", encoding="utf-8") as fp:
-            fp.write(f"{ts};{target};{command};{name}\n")
-            if not normalized:
-                fp.write("NOVAL\n")
-                return
-            for raw_line in normalized.splitlines():
-                fp.write(f"{raw_line}\n")
 
     def _store_value(self, name: str, value: Optional[str] = None):
         target = self.current_target or ""
         command = self.last_command or ""
         stored_value = self.last if value is None else value
-        if self.auto_store_enabled and value is not None:
-            self._append_lastres_block(target, command, name, stored_value)
-        else:
-            self._append_lastres_row(target, command, name, stored_value)
+        self._append_lastres_row(target, command, name, stored_value)
         self.logger("INFO", f"STORE: {name} [{target}]")
 
     def _store_comment(self, text: str):
@@ -582,7 +733,8 @@ class CombinedScriptEngine:
         self.logger("INFO", f"SAVEBIN: {out} ({len(self.last_bin)} bytes)")
 
     def _run_command(self, cmd: str):
-        if not self.current_target: raise RuntimeError("Nessun target selezionato (@target)")
+        if not self.current_target:
+            raise RuntimeError("Nessun target selezionato (@target)")
 
         transport = self.targets[self.current_target].transport
         self.last_command = cmd
@@ -595,28 +747,40 @@ class CombinedScriptEngine:
             self.last = None
             self.readbin_armed = False
             self.logger("RXBIN", f"[{self.current_target}] {len(data)} bytes")
+
         elif is_query_command(cmd):
             if self.serial_pre_query_flush:
                 if isinstance(transport, SerialTransport):
-                    with contextlib.suppress(Exception): transport.ser.reset_input_buffer()
+                    with contextlib.suppress(Exception):
+                        transport.ser.reset_input_buffer()
                 else:
-                    with contextlib.suppress(Exception): transport.read_available()
+                    with contextlib.suppress(Exception):
+                        transport.read_available()
+
             try:
                 reply = self._query_with_buffered_multiline(transport, cmd)
             except TimeoutError:
-                if not isinstance(transport, SerialTransport): raise
-                self.logger("WARN", f"[{self.current_target}] Timeout query: retry tra {self.serial_query_retry_delay_s:g}s")
+                if not isinstance(transport, SerialTransport):
+                    raise
+                self.logger(
+                    "WARN",
+                    f"[{self.current_target}] Timeout query: retry tra {self.serial_query_retry_delay_s:g}s",
+                )
                 time.sleep(self.serial_query_retry_delay_s)
                 reply = self._query_with_buffered_multiline(transport, cmd)
+
             self.last = reply
             self.last_bin = None
             self.logger("RX", f"[{self.current_target}] {reply}")
+
             if self.auto_store_enabled:
                 self._store_value(self.auto_store_label, value=reply)
+
         else:
             transport.write(cmd)
             self.last = None
             self.last_bin = None
+
 class CombinedMonitorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -636,6 +800,9 @@ class CombinedMonitorApp(tk.Tk):
             script_loader=self._load_script_lines_for_engine,
         )
         self.engine.prompt_callback = self._handle_prompt
+        # Colleghiamo il motore per l'aggiornamento UI ad ogni riga per il Debugger!
+        self.engine.on_state_change = self._handle_state_change
+        
         self.run_thread: Optional[threading.Thread] = None
         self.running = False
 
@@ -668,19 +835,25 @@ class CombinedMonitorApp(tk.Tk):
 
         self.btn_run = ttk.Button(toolbar, text="Esegui Tab", command=self.run_script)
         self.btn_run.pack(side="left", padx=(0, 4))
-        self.btn_stop = ttk.Button(toolbar, text="Stop", command=self.request_stop)
+        self.btn_debug = ttk.Button(toolbar, text="Debug", command=self.debug_script)
+        self.btn_debug.pack(side="left", padx=(0, 4))
+        self.btn_stop = ttk.Button(toolbar, text="Stop", command=self.request_stop, state="disabled")
         self.btn_stop.pack(side="left", padx=(0, 15))
-        self.btn_stop.state(["disabled"])
+        
+        # --- PULSANTI DEBUG ---
+        self.btn_pause = ttk.Button(toolbar, text="Pausa", command=self.toggle_pause, state="disabled")
+        self.btn_pause.pack(side="left", padx=(0, 4))
+        self.btn_step = ttk.Button(toolbar, text="Step", command=self.step_script, state="disabled")
+        self.btn_step.pack(side="left", padx=(0, 15))
 
         ttk.Button(toolbar, text="Nuovo", command=self.new_tab).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="Salva", command=self.save_current_tab).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text="Salva Come...", command=self.save_tab_as).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text="Chiudi Tab", command=self.close_current_tab).pack(side="left", padx=(0, 15))
 
         ttk.Button(toolbar, text="Chiudi Connessioni", command=self.close_connections).pack(side="right", padx=(4, 0))
         ttk.Button(toolbar, text="Pulisci Log", command=self.clear_log).pack(side="right")
 
-        # Splitter verticale per i Tab e il Log
+        # Splitter verticale per i Tab e il Pannello Inferiore
         right_paned = ttk.PanedWindow(main_area, orient=tk.VERTICAL)
         right_paned.pack(fill="both", expand=True)
 
@@ -688,7 +861,7 @@ class CombinedMonitorApp(tk.Tk):
         self.notebook = ttk.Notebook(right_paned)
         right_paned.add(self.notebook, weight=3)
 
-        # ==================== BOTTOM AREA (Log & History) ====================
+        # ==================== PANNELLO INFERIORE ====================
         bottom_frame = ttk.Frame(right_paned)
         right_paned.add(bottom_frame, weight=1)
 
@@ -697,8 +870,26 @@ class CombinedMonitorApp(tk.Tk):
         self.log = ScrolledText(log_frame, wrap="word", font=("Consolas", 10), state="disabled")
         self.log.pack(fill="both", expand=True)
 
-        hist_frame = ttk.LabelFrame(bottom_frame, text="History (@conn)", padding=5)
-        hist_frame.pack(side="right", fill="both", expand=False)
+        # Tabs per Variabili e History
+        self.bottom_tabs = ttk.Notebook(bottom_frame)
+        self.bottom_tabs.pack(side="right", fill="both", expand=False)
+
+        # Tab Variabili (Debugger)
+        var_frame = ttk.Frame(self.bottom_tabs)
+        self.bottom_tabs.add(var_frame, text="Variabili")
+        self.var_tree = ttk.Treeview(var_frame, columns=("nome", "valore", "scope"), show="headings", height=8)
+        self.var_tree.heading("nome", text="Nome")
+        self.var_tree.heading("valore", text="Valore")
+        self.var_tree.heading("scope", text="Scope")
+        
+        self.var_tree.column("nome", width=120)
+        self.var_tree.column("valore", width=120)
+        self.var_tree.column("scope", width=80)
+        self.var_tree.pack(fill="both", expand=True)
+
+        # Tab History
+        hist_frame = ttk.Frame(self.bottom_tabs)
+        self.bottom_tabs.add(hist_frame, text="History (@conn)")
         self.conn_history_list = tk.Listbox(hist_frame, width=45, font=("Consolas", 9))
         self.conn_history_list.pack(fill="both", expand=True)
         self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
@@ -706,7 +897,7 @@ class CombinedMonitorApp(tk.Tk):
         # Crea un tab iniziale di default
         self.new_tab(title="Senza Nome", content="# Inserisci comandi SCPI qui\n")
 
-    # ------------------ GESTIONE WORKSPACE ------------------
+    # ------------------ GESTIONE WORKSPACE E TAB ------------------
     def open_workspace(self):
         folder = filedialog.askdirectory(parent=self, title="Seleziona Cartella Progetto")
         if not folder:
@@ -720,7 +911,6 @@ class CombinedMonitorApp(tk.Tk):
         self.file_list.delete(0, tk.END)
         if not self.current_workspace:
             return
-        # Carica tutti i file .scpi nella cartella
         for file in sorted(self.current_workspace.glob("*.scpi")):
             self.file_list.insert(tk.END, file.name)
 
@@ -732,7 +922,6 @@ class CombinedMonitorApp(tk.Tk):
         filepath = self.current_workspace / filename
         self.open_file_in_tab(filepath)
 
-    # ------------------ GESTIONE TAB ------------------
     def new_tab(self, title="Senza Nome", content="", filepath: Optional[Path] = None):
         frame = ttk.Frame(self.notebook)
         text_widget = ScrolledText(frame, font=("Consolas", 10), undo=True)
@@ -740,7 +929,7 @@ class CombinedMonitorApp(tk.Tk):
         text_widget.insert("1.0", content)
 
         self.notebook.add(frame, text=title)
-        self.notebook.select(frame)  # Porta in primo piano il nuovo tab
+        self.notebook.select(frame)
 
         tab_id = self.notebook.select()
         self.open_tabs[tab_id] = {
@@ -749,12 +938,10 @@ class CombinedMonitorApp(tk.Tk):
         }
 
     def open_file_in_tab(self, filepath: Path):
-        # Evita di riaprire un file se è già in un tab esistente
         for tab_id, data in self.open_tabs.items():
             if data["path"] == filepath:
                 self.notebook.select(tab_id)
                 return
-        
         try:
             content = filepath.read_text(encoding="utf-8")
             self.new_tab(title=filepath.name, content=content, filepath=filepath)
@@ -764,26 +951,21 @@ class CombinedMonitorApp(tk.Tk):
 
     def get_current_tab_data(self) -> Optional[dict]:
         tab_id = self.notebook.select()
-        if not tab_id:
-            return None
+        if not tab_id: return None
         return self.open_tabs.get(tab_id)
 
     def close_current_tab(self):
         tab_id = self.notebook.select()
-        if not tab_id:
-            return
+        if not tab_id: return
         self.notebook.forget(tab_id)
         self.open_tabs.pop(tab_id, None)
 
-    # ------------------ SALVATAGGIO ------------------
     def save_current_tab(self):
         tab_data = self.get_current_tab_data()
         if not tab_data: return
-
         if tab_data["path"] is None:
             self.save_tab_as()
             return
-
         content = tab_data["text_widget"].get("1.0", "end-1c")
         try:
             tab_data["path"].write_text(content, encoding="utf-8")
@@ -797,8 +979,7 @@ class CombinedMonitorApp(tk.Tk):
 
         initial_dir = self.current_workspace if self.current_workspace else str(Path.home())
         filepath = filedialog.asksaveasfilename(
-            parent=self,
-            title="Salva Script Come",
+            parent=self, title="Salva Script Come",
             defaultextension=".scpi",
             filetypes=[("Script SCPI", "*.scpi"), ("Tutti i file", "*.*")],
             initialdir=initial_dir
@@ -810,45 +991,117 @@ class CombinedMonitorApp(tk.Tk):
         try:
             path.write_text(content, encoding="utf-8")
             tab_data["path"] = path
-            
-            # Aggiorna il nome del Tab visibile
             tab_id = self.notebook.select()
             self.notebook.tab(tab_id, text=path.name)
             self._append_log("INFO", f"Salvato come: {path.name}")
-            
-            # Aggiorna la vista file se l'abbiamo salvato nel workspace corrente
             if self.current_workspace and str(path).startswith(str(self.current_workspace)):
                 self.refresh_file_list()
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Impossibile salvare:\n{exc}")
 
-    # ------------------ INTEGRAZIONE ENGINE E RUN ------------------
     def _load_script_lines_for_engine(self, script_name: str) -> List[str]:
-        """Usato dall'engine quando incontra @call o @script."""
         if not self.current_workspace:
             raise ValueError(f"Nessun progetto aperto. Impossibile caricare '@call {script_name}'")
-        
         name = script_name if script_name.lower().endswith(".scpi") else f"{script_name}.scpi"
         path = self.current_workspace / name
         if not path.exists():
             raise ValueError(f"Script non trovato nel progetto corrente: {path}")
-            
         return path.read_text(encoding="utf-8").splitlines()
 
-    def run_script(self):
-        if self.running:
-            return
+    # ------------------ DEBUGGER E AGGIORNAMENTO UI ------------------
 
+    def _handle_state_change(self):
+        """Richiamato dall'Engine in background prima di eseguire una riga."""
+        if not self.engine.call_stack: return
+        
+        # Catturiamo lo stato in modo thread-safe
+        frame = self.engine.call_stack[-1]
+        pc = frame["pc"]
+        script_name = frame["name"]
+        
+        # Copia sicura dei dizionari: prendiamo TUTTE le variabili locali di tutti gli script!
+        g_vars = dict(self.engine.global_vars)
+        all_l_vars = {s_name: dict(v_dict) for s_name, v_dict in self.engine.local_vars.items()}
+        last_val = self.engine.last
+        
+        # Scheduliamo l'aggiornamento UI sul Main Thread
+        self.after(0, lambda: self._update_debug_ui(script_name, pc, g_vars, all_l_vars, last_val))
+
+    def _update_debug_ui(self, script_name: str, pc: int, g_vars: dict, all_l_vars: dict, last_val: Any):
+        """Aggiorna tabella variabili e colora di giallo la riga corrente."""
+        # 1. Aggiorna Variabili
+        for item in self.var_tree.get_children():
+            self.var_tree.delete(item)
+            
+        val_str = str(last_val) if last_val is not None else "N/A"
+        self.var_tree.insert("", "end", values=("last", val_str, "Built-in"))
+        
+        # Inserisci le Globali
+        for k, v in sorted(g_vars.items()):
+            self.var_tree.insert("", "end", values=(k, str(v), "Global"))
+            
+        # Inserisci TUTTE le Locali Statiche, indicando a quale script appartengono
+        for s_name, vars_dict in sorted(all_l_vars.items()):
+            for k, v in sorted(vars_dict.items()):
+                # Mostra chiaramente in che script ci troviamo
+                scope_label = f"Local ({s_name})"
+                # Se è dello script corrente, mettiamo un asterisco per farla risaltare
+                if s_name == script_name:
+                    scope_label = f"➤ {scope_label}"
+                    
+                self.var_tree.insert("", "end", values=(k, str(v), scope_label))
+            
+        # 2. Evidenzia la riga corrente nel tab giusto
+        target_tab_id = None
+        for tab_id, data in self.open_tabs.items():
+            name = data["path"].name if data["path"] else "Tab senza nome"
+            if name == script_name:
+                target_tab_id = tab_id
+                break
+
+        # Se il tab è aperto, rimuovi l'highlight vecchio e metti il nuovo
+        if target_tab_id:
+            tw = self.open_tabs[target_tab_id]["text_widget"]
+            tw.tag_remove("current_line", "1.0", "end")
+            line_idx = pc + 1
+            tw.tag_add("current_line", f"{line_idx}.0", f"{line_idx}.end")
+            tw.tag_config("current_line", background="yellow", foreground="black")
+            tw.see(f"{line_idx}.0")
+    def toggle_pause(self):
+        if self.engine.step_mode:
+            # Riprendi (Play)
+            self.engine.step_mode = False
+            self.engine.step_event.set()
+            self.btn_pause.config(text="Pausa")
+            self.btn_step.state(["disabled"])
+            self._append_log("INFO", "Esecuzione ripresa (RUN)...")
+        else:
+            # Metti in Pausa
+            self.engine.step_mode = True
+            self.engine.step_event.clear()
+            self.btn_pause.config(text="Riprendi")
+            self.btn_step.state(["!disabled"])
+            self._append_log("INFO", "In pausa. Usa Step per avanzare.")
+
+    def step_script(self):
+        if self.engine.step_mode:
+            # Sblocca l'engine per UN SOLO ciclo
+            self.engine.step_event.set()
+
+    # ------------------ INTEGRAZIONE ENGINE E RUN ------------------
+    def debug_script(self):
+        """Fa partire lo script già in modalità Pausa (Step-by-Step)."""
+        if self.running: return
+        self.engine.step_mode = True
+        self.btn_pause.config(text="Riprendi")
+        self.run_script() # Avvia il thread, ma si fermerà alla riga 1!
+    def run_script(self):
+        if self.running: return
         tab_data = self.get_current_tab_data()
-        if not tab_data:
-            return
+        if not tab_data: return
 
         raw_script = tab_data["text_widget"].get("1.0", "end")
-        normalized_script = re.sub(r"\\n(?=\s*[@*A-Za-z])", "\n", raw_script)
-        lines = normalized_script.splitlines()
-
-        if normalized_script != raw_script:
-            self._append_log("INFO", "Rilevate sequenze \\n nel testo: convertite in nuove righe")
+        lines = raw_script.splitlines()
 
         self._set_running(True)
         script_name = tab_data["path"].name if tab_data["path"] else "Tab senza nome"
@@ -867,16 +1120,32 @@ class CombinedMonitorApp(tk.Tk):
 
     def request_stop(self):
         self.engine.stop_requested = True
+        self.engine.step_event.set()  # Sblocca se era in pausa, sennò non si ferma!
         self._append_log("INFO", "Stop richiesto")
 
     def _set_running(self, value: bool):
         self.running = value
         if value:
             self.btn_run.state(["disabled"])
+            if hasattr(self, 'btn_debug'): self.btn_debug.state(["disabled"])
             self.btn_stop.state(["!disabled"])
+            self.btn_pause.state(["!disabled"])
+            
+            # Se siamo partiti col tasto Debug, accendi subito lo Step
+            if getattr(self.engine, "step_mode", False):
+                self.btn_step.state(["!disabled"])
         else:
             self.btn_run.state(["!disabled"])
+            if hasattr(self, 'btn_debug'): self.btn_debug.state(["!disabled"])
             self.btn_stop.state(["disabled"])
+            self.btn_pause.state(["disabled"])
+            self.btn_step.state(["disabled"])
+            self.btn_pause.config(text="Pausa")
+            
+            self.engine.step_mode = False # Resetta la modalità
+            
+            for data in self.open_tabs.values():
+                data["text_widget"].tag_remove("current_line", "1.0", "end")
 
     # ------------------ LOG E HISTORY ------------------
     def close_connections(self):
@@ -901,24 +1170,18 @@ class CombinedMonitorApp(tk.Tk):
             self.conn_history_list.see("end")
 
     def _insert_selected_conn_history(self, _event=None):
-        """Incolla il comando selezionato dalla history nel Tab corrente, alla posizione del cursore."""
         selection = self.conn_history_list.curselection()
-        if not selection:
-            return
-        command = self.conn_history_list.get(selection[0])
-        
+        if not selection: return
         tab_data = self.get_current_tab_data()
         if tab_data:
-            text_widget = tab_data["text_widget"]
-            text_widget.insert(tk.INSERT, f"{command}\n")
-            text_widget.see(tk.INSERT)
+            tab_data["text_widget"].insert(tk.INSERT, f"{self.conn_history_list.get(selection[0])}\n")
+            tab_data["text_widget"].see(tk.INSERT)
 
     def destroy(self):
         self.engine.close_all()
         super().destroy()
-        
+
     def _handle_prompt(self, msg: str):
-        """Blocca l'engine finché l'utente non risponde al popup."""
         event = threading.Event()
         self.after(0, lambda: self._show_prompt_dialog(msg, event))
         event.wait() 
@@ -926,7 +1189,8 @@ class CombinedMonitorApp(tk.Tk):
     def _show_prompt_dialog(self, msg: str, event: threading.Event):
         messagebox.showinfo("Azione Richiesta", msg, parent=self)
         event.set()
-        
+
 if __name__ == "__main__":
     app = CombinedMonitorApp()
-    app.mainloop()
+    app.mainloop()     
+
