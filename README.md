@@ -144,9 +144,18 @@ Attempting to assign these names through `@var`, `@gvar`, `@inc`, or `@eval` rai
 
 ### `@print`
 
+> Note: if you want plain text that is not numeric, always quote it.
+
+---
+
+## 🌍 Variable Scope (Global vs Local Static)
+
+### `@var` (local static)
 ```text
 @print <arg1> [arg2 ...]
 ```
+- Creates/updates a **local variable for the current script**.
+- Locals are **static per script file**: they remain tied to that script name across nested `@call`s.
 
 Logs a formatted text line in the monitor log (`INFO` level).  
 Runtime behavior:
@@ -162,6 +171,7 @@ Example:
 @print "Starting test step"
 @print channel 1 ready
 ```
+- Creates/updates a global variable shared by all scripts in the run.
 
 ---
 
@@ -210,6 +220,8 @@ Example:
 @var x 3
 @eval y = sin(x) * gain + 10
 ```
+- `N` is resolved via `_resolve_value`.
+- Nesting supported.
 
 ---
 
@@ -230,6 +242,9 @@ Action can be:
 @ifdef name <action>
 @ifndef name <action>
 ```
+- Stops script execution immediately.
+
+---
 
 ### Counted loop
 ```text
@@ -315,6 +330,7 @@ CSV header:
 ```text
 timestamp;target;command;name;value
 ```
+- Immediate return from current script to caller.
 
 ### `@store`
 ```text
