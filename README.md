@@ -297,8 +297,7 @@ timestamp;target;command;name;value
 
 ### `@call` / `@script`
 ```text
-@call script_name
-@script script_name
+@csvname <default_csv_filename>
 ```
 - Equivalent aliases.
 - In V2, scripts are loaded from the **currently opened workspace**.
