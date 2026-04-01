@@ -50,7 +50,81 @@ from pathlib import Path
 
 class CombinedScriptEngine:
     """Motore script vNext: Globali, Locali Statiche, Loop per-frame, Math e Debugger."""
+    BUILTIN_READONLY_NAMES = {"last", "target", "script", "time", "date", "datetime", "csvname", "binname"}
+    def _get_builtin_value(self, name: str) -> tuple[bool, Any]:
+        name = name.lower()
 
+        if name == "last":
+            val = self.last if self.last is not None else "0"
+            try:
+                return True, float(val)
+            except (ValueError, TypeError):
+                return True, str(val)
+        if name == "csvname":
+            return True, self.csvname
+
+        if name == "binname":
+            return True, self.binname
+        if name == "target":
+            return True, self.current_target or ""
+
+        if name == "script":
+            if self.call_stack:
+                return True, self.call_stack[-1]["name"]
+            return True, ""
+
+        if name == "time":
+            return True, datetime.now().strftime("%H:%M:%S")
+        if name == "date":
+            return True, datetime.now().strftime("%d/%m/%Y")
+        if name == "datetime":
+            return True, datetime.now().strftime("%d/%m/%Y_%H:%M:%S")            
+        return False, None
+
+    def _check_writable_name(self, name: str):
+        if name.lower() in self.BUILTIN_READONLY_NAMES:
+            raise ValueError(
+                f"'{name}' è un nome built-in di sola lettura e non può essere assegnato"
+            )
+    def _sanitize_filename(self, text: str) -> str:
+        text = str(text).strip()
+        text = text.replace(":", "-").replace("/", "_").replace("\\", "_")
+        text = text.replace("*", "_").replace("?", "_").replace('"', "_")
+        text = text.replace("<", "_").replace(">", "_").replace("|", "_")
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"_+", "_", text)
+        return text.strip("._")
+
+    def _build_name_from_args(self, args: List[str]) -> str:
+        if not args:
+            raise ValueError("Richiesto almeno un argomento")
+
+        parts = []
+        for arg in args:
+            token = arg.strip()
+            token_lower = token.lower()
+
+            # 1. built-in / variabili
+            exists, val, _ = self._get_var(token_lower)
+            if exists:
+                text = str(val)
+            else:
+                # 2. numero letterale
+                try:
+                    num = float(token)
+                    text = str(int(num)) if num.is_integer() else str(num)
+                except ValueError:
+                    # 3. fallback: testo letterale
+                    text = token
+
+            text = self._sanitize_filename(text)
+            if text:
+                parts.append(text)
+
+        name = "_".join(parts)
+        if not name:
+            raise ValueError("Nome file vuoto o non valido")
+        return name
     def __init__(
         self,
         logger: Callable[[str, str], None],
@@ -93,7 +167,9 @@ class CombinedScriptEngine:
         self.serial_multiline_idle_s = 0.12
 
         # File CSV risultati
-        self.lastres_path = Path.cwd() / "lastres.csv"
+        self.csvname = "lastres.csv"
+        self.binname = ""
+        self.lastres_path = Path.cwd() / self.csvname
 
         # Ambiente sicuro per @eval (solo funzioni matematiche standard)
         self._math_env = {k: v for k, v in math.__dict__.items() if not k.startswith("__")}
@@ -132,22 +208,28 @@ class CombinedScriptEngine:
     # CORE DSL vNext: Variabili, Scope e Lookup
     # ==========================================
     def _get_var(self, name: str) -> tuple[bool, Any, str]:
-        """Ritorna: (Esiste?, Valore, Scope['local'|'global']) secondo le regole di Lookup."""
+        """Ritorna: (esiste?, valore, scope['builtin'|'local'|'global'])."""
         name = name.lower()
+
+        # 1. Built-in read-only
+        exists, val = self._get_builtin_value(name)
+        if exists:
+            return True, val, "builtin"
+
         if not self.call_stack:
             return False, None, ""
-        
+
         curr_script = self.call_stack[-1]["name"]
-        
-        # 1. Cerca in locale statica
+
+        # 2. Locale statica
         if curr_script in self.local_vars and name in self.local_vars[curr_script]:
             return True, self.local_vars[curr_script][name], "local"
-            
-        # 2. Cerca in globale
+
+        # 3. Globale
         if name in self.global_vars:
             return True, self.global_vars[name], "global"
-            
-        # 3. Non esiste
+
+        # 4. Non esiste
         return False, None, ""
 
     def _resolve_value(self, val_str: str) -> Any:
@@ -331,7 +413,17 @@ class CombinedScriptEngine:
             "loop_stack":[],  # Ogni frame ha i suoi loop privati!
         })
         self.logger("INFO", f"CALL -> {script_name}")
-
+    def _format_args_for_display(self, args: List[str]) -> str:
+        parts = []
+        for arg in args:
+            try:
+                val = self._resolve_value(arg)
+            except ValueError:
+                # se non è una variabile/numero valido, trattalo come testo grezzo
+                val = arg
+            parts.append(str(val))
+        return " ".join(parts)
+        
     def run_lines(self, lines, entry_script_name: str = "__main__"):
         self.reset_runtime()
         self._push_script(entry_script_name, list(lines))
@@ -408,6 +500,7 @@ class CombinedScriptEngine:
             if len(args) < 2:
                 raise ValueError("@var richiede: nome valore")
             var_name = args[0].lower()
+            self._check_writable_name(var_name)
             val = self._resolve_value(" ".join(args[1:]))
             if curr_script not in self.local_vars:
                 self.local_vars[curr_script] = {}
@@ -418,6 +511,7 @@ class CombinedScriptEngine:
             if len(args) < 2:
                 raise ValueError("@gvar richiede: nome valore")
             var_name = args[0].lower()
+            self._check_writable_name(var_name)
             val = self._resolve_value(" ".join(args[1:]))
             self.global_vars[var_name] = val
             self.logger("INFO", f"GVAR (global): {var_name} = {val}")
@@ -426,6 +520,7 @@ class CombinedScriptEngine:
             if not args:
                 raise ValueError("@inc richiede il nome della variabile")
             var_name = args[0].lower()
+            self._check_writable_name(var_name)
             step = float(self._resolve_value(args[1])) if len(args) > 1 else 1.0
             
             exists, val, scope = self._get_var(var_name)
@@ -449,6 +544,7 @@ class CombinedScriptEngine:
             if len(args) < 3 or args[1] != "=":
                 raise ValueError("@eval formato: dest = expr")
             var_dest = args[0].lower()
+            self._check_writable_name(var_dest)
             expr = " ".join(args[2:]).replace("^", "**")
 
             eval_env = {"__builtins__": {}}
@@ -565,7 +661,23 @@ class CombinedScriptEngine:
             loop_stack.pop()
             self._skip_to_endloop()
             self.logger("INFO", "BREAK: Uscita forzata dal loop")
+        elif cmd == "print":
+            if not args:
+                raise ValueError("@print richiede almeno un argomento")
+            text = self._format_args_for_display(args)
+            self.logger("INFO", f"PRINT: {text}")
+        elif cmd == "csvname":
+            name = self._build_name_from_args(args)
+            if not name.lower().endswith(".csv"):
+                name += ".csv"
+            self.csvname = name
+            self.lastres_path = Path.cwd() / self.csvname
+            self.logger("INFO", f"CSVNAME: {self.csvname}")
 
+        elif cmd == "binname":
+            name = self._build_name_from_args(args)
+            self.binname = name
+            self.logger("INFO", f"BINNAME: {self.binname}")
         elif cmd == "prompt":
             msg = " ".join(args).strip("\"'")
             self.logger("WARN", f"PROMPT: {msg}")
@@ -726,9 +838,15 @@ class CombinedScriptEngine:
         if self.last_bin is None:
             raise RuntimeError("Nessun dato binario (usa prima @readbin + comando)")
         p = Path(filename)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = self.current_target or "notarget"
-        out = p.with_name(f"{p.stem}_{ts}_{target}{p.suffix}")
+
+        if self.binname:
+            stem = self.binname
+            suffix = p.suffix if p.suffix else ".bin"
+            out = p.with_name(f"{stem}{suffix}")
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = self.current_target or "notarget"
+            out = p.with_name(f"{p.stem}_{ts}_{target}{p.suffix}")
         out.write_bytes(self.last_bin)
         self.logger("INFO", f"SAVEBIN: {out} ({len(self.last_bin)} bytes)")
 
@@ -1022,19 +1140,21 @@ class CombinedMonitorApp(tk.Tk):
         # Copia sicura dei dizionari: prendiamo TUTTE le variabili locali di tutti gli script!
         g_vars = dict(self.engine.global_vars)
         all_l_vars = {s_name: dict(v_dict) for s_name, v_dict in self.engine.local_vars.items()}
-        last_val = self.engine.last
-        
+        builtins = {}
+        for name in sorted(self.engine.BUILTIN_READONLY_NAMES):
+            exists, val = self.engine._get_builtin_value(name)
+            if exists:
+                builtins[name] = val
         # Scheduliamo l'aggiornamento UI sul Main Thread
-        self.after(0, lambda: self._update_debug_ui(script_name, pc, g_vars, all_l_vars, last_val))
-
-    def _update_debug_ui(self, script_name: str, pc: int, g_vars: dict, all_l_vars: dict, last_val: Any):
+        self.after(0, lambda: self._update_debug_ui(script_name, pc, builtins, g_vars, all_l_vars))
+    def _update_debug_ui(self, script_name: str, pc: int, builtins: dict, g_vars: dict, all_l_vars: dict):
         """Aggiorna tabella variabili e colora di giallo la riga corrente."""
         # 1. Aggiorna Variabili
         for item in self.var_tree.get_children():
             self.var_tree.delete(item)
             
-        val_str = str(last_val) if last_val is not None else "N/A"
-        self.var_tree.insert("", "end", values=("last", val_str, "Built-in"))
+        for k, v in sorted(builtins.items()):
+            self.var_tree.insert("", "end", values=(k, str(v), "Built-in"))
         
         # Inserisci le Globali
         for k, v in sorted(g_vars.items()):

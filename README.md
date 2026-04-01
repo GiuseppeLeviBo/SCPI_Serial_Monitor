@@ -72,13 +72,13 @@ When interfacing with embedded devices, an active background reader thread can a
 
 `SCPI_combined_monitor_V2.py` is the advanced Combined Monitor: it includes a multi-tab editor, workspace-based `.scpi` files, a DSL with **global/local static variables**, full flow control, and an integrated **step-by-step debugger**.
 
+![Example screenshot](Screenshot2.png)
+
 Quick start:
 
 ```bash
 python SCPI_combined_monitor_V2.py
 ```
-
-![Combined Monitor V2 screenshot](Screenshot2.png)
 
 ---
 
@@ -126,40 +126,6 @@ When the DSL expects a value, resolution order is:
 5. If still unresolved ➜ explicit error (no silent fallback to raw string).
 
 > Note: if you want plain text that is not numeric, always quote it.
-
-### Built-in Variables
-
-In addition to user-defined variables, the engine exposes built-in runtime values that can be read directly in DSL expressions and conditions:
-
-- `last`: last ASCII query result (already documented in the value-resolution rules).
-- `current_target`: currently selected target name (equivalent to the latest `@target`).
-- `last_command`: last transmitted SCPI command string.
-- `last_bin_len`: length (in bytes) of the latest binary buffer (`last_bin`), or `0` if no binary payload is available.
-
-These values are read-only from the DSL perspective and are intended for diagnostics, guards, and logging.
-
-### `@print`
-
-```text
-@print <value_or_expression>
-@print "literal text"
-@print var_name
-```
-
-Prints the resolved value to the runtime log without altering transport state or control flow.  
-Typical uses:
-
-- quick diagnostics while debugging scripts,
-- tracing variable evolution inside loops,
-- showing built-in runtime values (`last`, `current_target`, `last_command`, `last_bin_len`).
-
-Example:
-
-```text
-@print "Acquisition started"
-@print current_target
-@print last
-```
 
 ---
 
@@ -293,15 +259,6 @@ WAV:DATA?
 - Data is stored in `last_bin`.
 - `@savebin` writes `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`.
 
-### `@binname`
-
-```text
-@binname <default_filename>
-```
-
-Changes the **default binary filename** used by `@savebin` immediately (at runtime).  
-The change is instantaneous and affects subsequent binary saves.
-
 ---
 
 ## 📝 Result Logging (`lastres.csv`)
@@ -334,23 +291,13 @@ timestamp;target;command;name;value
 ```
 - Inserts annotation row into CSV (`command=@comment`, `name=COMMENT`).
 
-### `@csvname`
-
-```text
-@csvname <default_csv_filename>
-```
-
-Changes the **default CSV results filename** immediately (at runtime).  
-All subsequent `@store`, `@startstore` automatic rows, and `@comment` rows are written to the new file.
-
 ---
 
 ## 📚 Modular Scripts
 
 ### `@call` / `@script`
 ```text
-@call script_name
-@script script_name
+@csvname <default_csv_filename>
 ```
 - Equivalent aliases.
 - In V2, scripts are loaded from the **currently opened workspace**.
@@ -468,82 +415,69 @@ Below is a complete test suite designed to cover parser, DSL engine, I/O, and de
 19. **Error on `@break` outside loop**
 20. **`@halt` interrupts run immediately**
 
-### C.1) Built-ins and print diagnostics
-
-21. **Built-in `current_target` reflects latest `@target`**
-22. **Built-in `last_command` updates on each SCPI TX**
-23. **Built-in `last_bin_len` is `0` before binary read**
-24. **Built-in `last_bin_len` matches received binary size**
-25. **`@print` with quoted literal logs exact text**
-26. **`@print` with variable logs resolved value**
-27. **`@print` with built-in logs expected runtime value**
-
 ### D) Call stack and modularity
 
-28. **Basic `@call` with existing file**
-29. **`@call` missing script**
-30. **`@script` alias behavior**
-31. **`@rts` early return**
-32. **`@rts` from root frame ends execution**
-33. **Multi-level nesting A→B→C with correct return PC**
+21. **Basic `@call` with existing file**
+22. **`@call` missing script**
+23. **`@script` alias behavior**
+24. **`@rts` early return**
+25. **`@rts` from root frame ends execution**
+26. **Multi-level nesting A→B→C with correct return PC**
 
 ### E) Transports and targets
 
-34. **`@target` without `@conn`**
+27. **`@target` without `@conn`**
    - Expected: target-not-connected error.
 
-35. **Serial connect defaults**
-36. **VISA connect with auto/ni/py backends**
-37. **Socket connect using `host:port` and split host+port formats**
-38. **SCPI command without active target**
+28. **Serial connect defaults**
+29. **VISA connect with auto/ni/py backends**
+30. **Socket connect using `host:port` and split host+port formats**
+31. **SCPI command without active target**
    - Expected: `No target selected` runtime error.
 
 ### F) ASCII queries and serial robustness
 
-39. **Standard query populates `last`**
-40. **Write command resets `last`**
-41. **Serial multiline response reconstruction**
-42. **Serial timeout + successful retry**
-43. **Non-serial timeout propagates error (no retry)**
-44. **Serial pre-query flush enabled behavior**
+32. **Standard query populates `last`**
+33. **Write command resets `last`**
+34. **Serial multiline response reconstruction**
+35. **Serial timeout + successful retry**
+36. **Non-serial timeout propagates error (no retry)**
+37. **Serial pre-query flush enabled behavior**
 
 ### G) Binary
 
-45. **`@readbin` + valid binary query**
-46. **`@savebin` without `last_bin` ➜ error**
-47. **Output filename format includes timestamp + target**
-48. **After `@readbin`, `last` must be `None`**
-49. **`@binname` switches default binary filename immediately**
+38. **`@readbin` + valid binary query**
+39. **`@savebin` without `last_bin` ➜ error**
+40. **Output filename format includes timestamp + target**
+41. **After `@readbin`, `last` must be `None`**
 
 ### H) CSV logging
 
-50. **`lastres.csv` header creation on first store**
-51. **`@store label` saves `last`**
-52. **`@store label explicit_value` saves explicit value**
-53. **`@startstore` saves every query**
-54. **`@stopstore` disables autosave**
-55. **`@comment` appends comment row**
-56. **Newline sanitization (`\r\n` / `\r`)**
-57. **Multiline CSV value quoting correctness**
-58. **`@csvname` switches output file immediately**
-59. **After `@csvname`, `@startstore` writes to the new CSV file**
+42. **`lastres.csv` header creation on first store**
+43. **`@store label` saves `last`**
+44. **`@store label explicit_value` saves explicit value**
+45. **`@startstore` saves every query**
+46. **`@stopstore` disables autosave**
+47. **`@comment` appends comment row**
+48. **Newline sanitization (`\r\n` / `\r`)**
+49. **Multiline CSV value quoting correctness**
 
 ### I) Debugger/UI workflow
 
-60. **Normal run: no `step_event` blocking**
-61. **Debug start: pause on first line**
-62. **Single-step advances exactly one line**
-63. **Pause↔Resume synchronization**
-64. **Stop during pause unblocks thread and exits**
-65. **Variable tab updates (`last`/global/local)**
-66. **Current-line highlight on correct tab**
-67. **No crash when script is not open in any tab**
+50. **Normal run: no `step_event` blocking**
+51. **Debug start: pause on first line**
+52. **Single-step advances exactly one line**
+53. **Pause↔Resume synchronization**
+54. **Stop during pause unblocks thread and exits**
+55. **Variable tab updates (`last`/global/local)**
+56. **Current-line highlight on correct tab**
+57. **No crash when script is not open in any tab**
 
 ### J) Error handling and resilience
 
-68. **Runtime error log includes `script_name:L<line>`**
-69. **After runtime error, `stop_requested=True` and run ends**
-70. **`close_all()` tolerates disconnect exceptions**
+58. **Runtime error log includes `script_name:L<line>`**
+59. **After runtime error, `stop_requested=True` and run ends**
+60. **`close_all()` tolerates disconnect exceptions**
 
 ---
 
