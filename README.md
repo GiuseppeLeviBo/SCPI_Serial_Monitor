@@ -72,13 +72,13 @@ When interfacing with embedded devices, an active background reader thread can a
 
 `SCPI_combined_monitor_V2.py` is the advanced Combined Monitor: it includes a multi-tab editor, workspace-based `.scpi` files, a DSL with **global/local static variables**, full flow control, and an integrated **step-by-step debugger**.
 
-![Example screenshot](Screenshot2.png)
-
 Quick start:
 
 ```bash
 python SCPI_combined_monitor_V2.py
 ```
+
+![Combined Monitor V2 screenshot](Screenshot2.png)
 
 ---
 
@@ -120,12 +120,58 @@ Supported comments:
 When the DSL expects a value, resolution order is:
 
 1. Quoted strings (`"abc"`, `'abc'`) ➜ literal string.
-2. `last` ➜ last query response (numeric if convertible, otherwise string).
+2. Built-in names (read-only) ➜ resolved first.
 3. Variable name ➜ scope lookup (current-script local first, then global).
 4. Numeric literal (`10`, `3.14`).
 5. If still unresolved ➜ explicit error (no silent fallback to raw string).
 
 > Note: if you want plain text that is not numeric, always quote it.
+
+### Built-in read-only names
+
+The engine exposes built-ins that are always available and cannot be overwritten:
+
+- `last`
+- `target`
+- `script`
+- `time`
+- `date`
+- `datetime`
+- `csvname`
+- `binname`
+
+Attempting to assign these names through `@var`, `@gvar`, `@inc`, or `@eval` raises an explicit error.
+
+### `@print`
+
+> Note: if you want plain text that is not numeric, always quote it.
+
+---
+
+## 🌍 Variable Scope (Global vs Local Static)
+
+### `@var` (local static)
+```text
+@print <arg1> [arg2 ...]
+```
+- Creates/updates a **local variable for the current script**.
+- Locals are **static per script file**: they remain tied to that script name across nested `@call`s.
+
+Logs a formatted text line in the monitor log (`INFO` level).  
+Runtime behavior:
+
+- requires at least one argument, otherwise raises `@print richiede almeno un argomento`;
+- each argument is resolved via DSL rules when possible (variable/built-in/number), otherwise kept as raw text;
+- arguments are joined and emitted as `PRINT: <text>`;
+- does not change target/transport state (diagnostic/logging command).
+
+Example:
+
+```text
+@print "Starting test step"
+@print channel 1 ready
+```
+- Creates/updates a global variable shared by all scripts in the run.
 
 ---
 
@@ -174,6 +220,8 @@ Example:
 @var x 3
 @eval y = sin(x) * gain + 10
 ```
+- `N` is resolved via `_resolve_value`.
+- Nesting supported.
 
 ---
 
@@ -194,6 +242,9 @@ Action can be:
 @ifdef name <action>
 @ifndef name <action>
 ```
+- Stops script execution immediately.
+
+---
 
 ### Counted loop
 ```text
@@ -259,7 +310,17 @@ WAV:DATA?
 - Data is stored in `last_bin`.
 - `@savebin` writes `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`.
 
----
+### `@binname`
+```text
+@binname <name>
+```
+- Changes the in-memory default binary base name immediately.
+- The name is built from arguments via `_build_name_from_args` (supports variables/built-ins and sanitization).
+- Applied to subsequent binary save operations.
+
+`@savebin` behavior with `@binname`:
+- if `binname` is set, output is `<binname><suffix>` (default suffix `.bin` if missing);
+- otherwise fallback is timestamp/target pattern: `<stem>_<YYYYMMDD_HHMMSS>_<target><suffix>`.
 
 ## 📝 Result Logging (`lastres.csv`)
 
@@ -269,6 +330,7 @@ CSV header:
 ```text
 timestamp;target;command;name;value
 ```
+- Immediate return from current script to caller.
 
 ### `@store`
 ```text
@@ -291,13 +353,23 @@ timestamp;target;command;name;value
 ```
 - Inserts annotation row into CSV (`command=@comment`, `name=COMMENT`).
 
+### `@csvname`
+```text
+@csvname <name>
+```
+- Changes the CSV output filename immediately.
+- The name is built from arguments via `_build_name_from_args` (supports variables/built-ins and sanitization).
+- If `.csv` extension is missing, it is automatically appended.
+- The runtime updates `lastres_path` on the fly, so all subsequent `@store`, `@startstore`, and `@comment` writes go to the new file.
+
 ---
 
 ## 📚 Modular Scripts
 
 ### `@call` / `@script`
 ```text
-@csvname <default_csv_filename>
+@call script_name
+@script script_name
 ```
 - Equivalent aliases.
 - In V2, scripts are loaded from the **currently opened workspace**.
@@ -401,83 +473,101 @@ Below is a complete test suite designed to cover parser, DSL engine, I/O, and de
 10. **`@eval` creates local if destination is not global**
    - Setup: `@eval q = 2+2`.
    - Expected: `q` is local in current script.
+11. **Built-in name assignment blocked**
+   - Setup: `@var time 1` / `@gvar target "x"` / `@eval date = 1`.
+   - Expected: explicit read-only built-in error.
 
 ### C) Conditions and control flow
 
-11. **`@if` numeric true/false branches**
-12. **`@if` string comparisons (`==`, `!=`)**
-13. **`@ifdef` existing variable path**
-14. **`@ifndef` missing variable path**
-15. **`@loop` executes exact N iterations**
-16. **`@while` natural exit path**
-17. **`@break` inside nested loops (breaks current loop only)**
-18. **Error on `@endloop` without opener**
-19. **Error on `@break` outside loop**
-20. **`@halt` interrupts run immediately**
+12. **`@if` numeric true/false branches**
+13. **`@if` string comparisons (`==`, `!=`)**
+14. **`@ifdef` existing variable path**
+15. **`@ifndef` missing variable path**
+16. **`@loop` executes exact N iterations**
+17. **`@while` natural exit path**
+18. **`@break` inside nested loops (breaks current loop only)**
+19. **Error on `@endloop` without opener**
+20. **Error on `@break` outside loop**
+21. **`@halt` interrupts run immediately**
 
 ### D) Call stack and modularity
 
-21. **Basic `@call` with existing file**
-22. **`@call` missing script**
-23. **`@script` alias behavior**
-24. **`@rts` early return**
-25. **`@rts` from root frame ends execution**
-26. **Multi-level nesting A→B→C with correct return PC**
+22. **Basic `@call` with existing file**
+23. **`@call` missing script**
+24. **`@script` alias behavior**
+25. **`@rts` early return**
+26. **`@rts` from root frame ends execution**
+27. **Multi-level nesting A→B→C with correct return PC**
 
 ### E) Transports and targets
 
-27. **`@target` without `@conn`**
+28. **`@target` without `@conn`**
    - Expected: target-not-connected error.
 
-28. **Serial connect defaults**
-29. **VISA connect with auto/ni/py backends**
-30. **Socket connect using `host:port` and split host+port formats**
-31. **SCPI command without active target**
+29. **Serial connect defaults**
+30. **VISA connect with auto/ni/py backends**
+31. **Socket connect using `host:port` and split host+port formats**
+32. **SCPI command without active target**
    - Expected: `No target selected` runtime error.
 
 ### F) ASCII queries and serial robustness
 
-32. **Standard query populates `last`**
-33. **Write command resets `last`**
-34. **Serial multiline response reconstruction**
-35. **Serial timeout + successful retry**
-36. **Non-serial timeout propagates error (no retry)**
-37. **Serial pre-query flush enabled behavior**
+33. **Standard query populates `last`**
+34. **Write command resets `last`**
+35. **Serial multiline response reconstruction**
+36. **Serial timeout + successful retry**
+37. **Non-serial timeout propagates error (no retry)**
+38. **Serial pre-query flush enabled behavior**
 
 ### G) Binary
 
-38. **`@readbin` + valid binary query**
-39. **`@savebin` without `last_bin` ➜ error**
-40. **Output filename format includes timestamp + target**
-41. **After `@readbin`, `last` must be `None`**
+39. **`@readbin` + valid binary query**
+40. **`@savebin` without `last_bin` ➜ error**
+41. **Output filename format includes timestamp + target (when `binname` is empty)**
+42. **After `@readbin`, `last` must be `None`**
+43. **`@binname` forces fixed binary output stem for subsequent saves**
 
 ### H) CSV logging
 
-42. **`lastres.csv` header creation on first store**
-43. **`@store label` saves `last`**
-44. **`@store label explicit_value` saves explicit value**
-45. **`@startstore` saves every query**
-46. **`@stopstore` disables autosave**
-47. **`@comment` appends comment row**
-48. **Newline sanitization (`\r\n` / `\r`)**
-49. **Multiline CSV value quoting correctness**
+44. **`lastres.csv` header creation on first store**
+45. **`@store label` saves `last`**
+46. **`@store label explicit_value` saves explicit value**
+47. **`@startstore` saves every query**
+48. **`@stopstore` disables autosave**
+49. **`@comment` appends comment row**
+50. **Newline sanitization (`\r\n` / `\r`)**
+51. **Multiline CSV value quoting correctness**
 
 ### I) Debugger/UI workflow
 
-50. **Normal run: no `step_event` blocking**
-51. **Debug start: pause on first line**
-52. **Single-step advances exactly one line**
-53. **Pause↔Resume synchronization**
-54. **Stop during pause unblocks thread and exits**
-55. **Variable tab updates (`last`/global/local)**
-56. **Current-line highlight on correct tab**
-57. **No crash when script is not open in any tab**
+52. **Normal run: no `step_event` blocking**
+53. **Debug start: pause on first line**
+54. **Single-step advances exactly one line**
+55. **Pause↔Resume synchronization**
+56. **Stop during pause unblocks thread and exits**
+57. **Variable tab updates (built-ins/global/local)**
+58. **Current-line highlight on correct tab**
+59. **No crash when script is not open in any tab**
 
 ### J) Error handling and resilience
 
-58. **Runtime error log includes `script_name:L<line>`**
-59. **After runtime error, `stop_requested=True` and run ends**
-60. **`close_all()` tolerates disconnect exceptions**
+60. **Runtime error log includes `script_name:L<line>`**
+61. **After runtime error, `stop_requested=True` and run ends**
+62. **`close_all()` tolerates disconnect exceptions**
+
+### K) Print command
+
+63. **`@print` with no args raises explicit error**
+64. **`@print` with one arg logs `PRINT: ...`**
+65. **`@print` with mixed args (built-in/var/literal) logs resolved text**
+
+### L) Runtime output naming
+
+66. **`@csvname` without extension appends `.csv`**
+67. **`@csvname` switches `lastres_path` immediately for next write**
+68. **`@binname` updates in-memory binary default name immediately**
+69. **Quoted `@csvname` / `@binname` arguments preserve spaces in names**
+70. **Filename sanitization replaces forbidden characters and collapses spaces/underscores**
 
 ---
 
