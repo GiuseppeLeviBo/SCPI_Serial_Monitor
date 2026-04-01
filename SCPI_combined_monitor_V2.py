@@ -50,7 +50,7 @@ from pathlib import Path
 
 class CombinedScriptEngine:
     """Motore script vNext: Globali, Locali Statiche, Loop per-frame, Math e Debugger."""
-    BUILTIN_READONLY_NAMES = {"last", "target", "script", "time", "date"}
+    BUILTIN_READONLY_NAMES = {"last", "target", "script", "time", "date", "datetime", "csvname", "binname"}
     def _get_builtin_value(self, name: str) -> tuple[bool, Any]:
         name = name.lower()
 
@@ -60,7 +60,11 @@ class CombinedScriptEngine:
                 return True, float(val)
             except (ValueError, TypeError):
                 return True, str(val)
+        if name == "csvname":
+            return True, self.csvname
 
+        if name == "binname":
+            return True, self.binname
         if name == "target":
             return True, self.current_target or ""
 
@@ -73,6 +77,8 @@ class CombinedScriptEngine:
             return True, datetime.now().strftime("%H:%M:%S")
         if name == "date":
             return True, datetime.now().strftime("%d/%m/%Y")
+        if name == "datetime":
+            return True, datetime.now().strftime("%d/%m/%Y_%H:%M:%S")            
         return False, None
 
     def _check_writable_name(self, name: str):
@@ -80,6 +86,45 @@ class CombinedScriptEngine:
             raise ValueError(
                 f"'{name}' è un nome built-in di sola lettura e non può essere assegnato"
             )
+    def _sanitize_filename(self, text: str) -> str:
+        text = str(text).strip()
+        text = text.replace(":", "-").replace("/", "_").replace("\\", "_")
+        text = text.replace("*", "_").replace("?", "_").replace('"', "_")
+        text = text.replace("<", "_").replace(">", "_").replace("|", "_")
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"_+", "_", text)
+        return text.strip("._")
+
+    def _build_name_from_args(self, args: List[str]) -> str:
+        if not args:
+            raise ValueError("Richiesto almeno un argomento")
+
+        parts = []
+        for arg in args:
+            token = arg.strip()
+            token_lower = token.lower()
+
+            # 1. built-in / variabili
+            exists, val, _ = self._get_var(token_lower)
+            if exists:
+                text = str(val)
+            else:
+                # 2. numero letterale
+                try:
+                    num = float(token)
+                    text = str(int(num)) if num.is_integer() else str(num)
+                except ValueError:
+                    # 3. fallback: testo letterale
+                    text = token
+
+            text = self._sanitize_filename(text)
+            if text:
+                parts.append(text)
+
+        name = "_".join(parts)
+        if not name:
+            raise ValueError("Nome file vuoto o non valido")
+        return name
     def __init__(
         self,
         logger: Callable[[str, str], None],
@@ -122,7 +167,9 @@ class CombinedScriptEngine:
         self.serial_multiline_idle_s = 0.12
 
         # File CSV risultati
-        self.lastres_path = Path.cwd() / "lastres.csv"
+        self.csvname = "lastres.csv"
+        self.binname = ""
+        self.lastres_path = Path.cwd() / self.csvname
 
         # Ambiente sicuro per @eval (solo funzioni matematiche standard)
         self._math_env = {k: v for k, v in math.__dict__.items() if not k.startswith("__")}
@@ -619,6 +666,18 @@ class CombinedScriptEngine:
                 raise ValueError("@print richiede almeno un argomento")
             text = self._format_args_for_display(args)
             self.logger("INFO", f"PRINT: {text}")
+        elif cmd == "csvname":
+            name = self._build_name_from_args(args)
+            if not name.lower().endswith(".csv"):
+                name += ".csv"
+            self.csvname = name
+            self.lastres_path = Path.cwd() / self.csvname
+            self.logger("INFO", f"CSVNAME: {self.csvname}")
+
+        elif cmd == "binname":
+            name = self._build_name_from_args(args)
+            self.binname = name
+            self.logger("INFO", f"BINNAME: {self.binname}")
         elif cmd == "prompt":
             msg = " ".join(args).strip("\"'")
             self.logger("WARN", f"PROMPT: {msg}")
@@ -779,9 +838,15 @@ class CombinedScriptEngine:
         if self.last_bin is None:
             raise RuntimeError("Nessun dato binario (usa prima @readbin + comando)")
         p = Path(filename)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = self.current_target or "notarget"
-        out = p.with_name(f"{p.stem}_{ts}_{target}{p.suffix}")
+
+        if self.binname:
+            stem = self.binname
+            suffix = p.suffix if p.suffix else ".bin"
+            out = p.with_name(f"{stem}{suffix}")
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = self.current_target or "notarget"
+            out = p.with_name(f"{p.stem}_{ts}_{target}{p.suffix}")
         out.write_bytes(self.last_bin)
         self.logger("INFO", f"SAVEBIN: {out} ({len(self.last_bin)} bytes)")
 
