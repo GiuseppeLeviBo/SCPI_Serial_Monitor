@@ -128,6 +128,17 @@ Example:
 
 ## Flow control
 
+### `@wait`
+
+@wait <seconds>
+
+Suspends execution for the specified number of seconds.
+Argument is resolved through normal value resolution rules.
+
+Example:
+@wait 1
+@wait delay_s
+
 ### `@if`
 
 ```text
@@ -185,6 +196,12 @@ Stops script execution immediately.
 
 ---
 
+### `@prompt`
+
+@prompt <text>
+
+Shows a blocking dialog to the user and resumes execution only after acknowledgement.
+
 ## Connections and target selection
 
 ### `@conn`
@@ -230,13 +247,35 @@ WAV:DATA?
 ### `@binname`
 
 ```text
-@binname <name>
+@binname <part1> [part2 ...]
 ```
 
 Sets default binary output base name.
+Rules:
 
-If `binname` is set, `@savebin` uses `<binname><suffix>` (default `.bin` if missing).
-Otherwise fallback naming uses timestamp + target.
+Each part may be:
+- a quoted string
+- a built-in read-only name
+- a variable
+- a numeric literal
+- or plain text token
+Parts are resolved when possible, sanitized for safe filename usage, and joined with _
+If the resulting name does not end with .bin, the extension is added automatically
+
+Examples:
+```text
+@binname datetime target
+@binname "waveform" date time
+@binname target "captureA""
+```
+Possible result:
+```text
+01_04_2026_12-43-06_arduino
+waveform_01_04_2026_12-43-06
+arduino_captureA
+```
+
+- if binname is empty, the engine falls back to timestamp + target naming.
 
 ---
 
@@ -252,12 +291,17 @@ timestamp;target;command;name;value
 
 ### `@store`
 
-```text
+@store
 @store <label>
 @store <label> <explicit_value>
-```
 
-Stores `last` (or explicit value) into CSV.
+Forms:
+- `@store` -> stores `last` with label `LAST`
+- `@store label` -> stores `last`
+- `@store label value` -> stores explicit value
+
+If label contains spaces, it must be quoted:
+@store "Voltage read" last
 
 ### `@startstore` / `@stopstore`
 
@@ -279,12 +323,35 @@ Appends annotation row (`command=@comment`, `name=COMMENT`).
 ### `@csvname`
 
 ```text
-@csvname <name>
+@csvname <part1> [part2 ...]
 ```
 
-Changes active CSV output file immediately (adds `.csv` extension if missing).
+Changes the active CSV output filename immediately.
 
----
+Rules:
+
+Each part may be:
+- a quoted string
+- a built-in read-only name
+- a variable
+- a numeric literal
+- or plain text token
+Parts are resolved when possible, sanitized for safe filename usage, and joined with _
+If the resulting name does not end with .csv, the extension is added automatically
+
+Examples:
+```text
+@csvname date time
+@csvname "testA" date time
+@csvname target "sweep"
+```
+Possible result:
+```text
+01_04_2026_12-43-06.csv
+testA_01_04_2026_12-43-06.csv
+arduino_sweep.csv
+```
+The change takes effect immediately: following @store, @comment, and @startstore activity will use the new file.
 
 ## Modular scripts
 
