@@ -13,6 +13,22 @@ from tkinter import ttk, messagebox, simpledialog, filedialog
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable, Dict, List, Optional
 
+try:
+    from dsl_commands import (
+        DSL_COMMAND_SPECS,
+        BUILTIN_SYMBOL_SPECS,
+        get_command_matches,
+        get_builtin_matches,
+    )
+except Exception:
+    DSL_COMMAND_SPECS = {}
+    BUILTIN_SYMBOL_SPECS = {}
+    get_command_matches = None
+    get_builtin_matches = None
+try:
+    from dsl_autocomplete import attach_autocomplete
+except Exception:
+    attach_autocomplete = None
 from SCPI_serial_monitor import (
     RawSocketScpiTransport,
     SerialTransport,
@@ -29,7 +45,6 @@ SCRIPT_DIR = Path.home() / ".scpi_macros"
 class TargetConnection:
     name: str
     transport: object
-
 
 
 
@@ -50,7 +65,7 @@ from pathlib import Path
 
 class CombinedScriptEngine:
     """Motore script vNext: Globali, Locali Statiche, Loop per-frame, Math e Debugger."""
-    BUILTIN_READONLY_NAMES = {"last", "target", "script", "time", "date", "datetime", "csvname", "binname"}
+    BUILTIN_READONLY_NAMES = {"last",  "last_command", "last_line", "last_bin", "target", "script", "time", "date", "datetime", "csvname", "binname"}
     def _get_builtin_value(self, name: str) -> tuple[bool, Any]:
         name = name.lower()
 
@@ -60,6 +75,14 @@ class CombinedScriptEngine:
                 return True, float(val)
             except (ValueError, TypeError):
                 return True, str(val)
+        if name == "last_command":
+            return True, self.last_command or ""
+        if name == "last_line":
+            return True, self.last_line or ""
+        if name == "last_bin":
+            if self.last_bin is None:
+                return True, "EMPTY"
+            return True, f"BINARY[{len(self.last_bin)} bytes]"
         if name == "csvname":
             return True, self.csvname
 
@@ -142,6 +165,7 @@ class CombinedScriptEngine:
         self.last: Optional[str] = None
         self.last_bin: Optional[bytes] = None
         self.last_command: Optional[str] = None
+        self.last_line: Optional[str] = None
         self.readbin_armed = False
 
         # --- Stato del DSL vNext ---
@@ -179,6 +203,7 @@ class CombinedScriptEngine:
         self.last = None
         self.last_bin = None
         self.last_command = None
+        self.last_line = None
         self.stop_requested = False
         self.readbin_armed = False
         self.call_stack =[]
@@ -459,7 +484,7 @@ class CombinedScriptEngine:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-
+            self.last_line = line
             try:
                 if line.startswith("@"):
                     self._run_meta(line)
@@ -686,13 +711,26 @@ class CombinedScriptEngine:
 
         elif cmd == "store":
             if len(args) == 0:
+                # 0 argomenti: usa la label di default "LAST" e salva l'ultima lettura
                 self._store_value("LAST")
+                
             elif len(args) == 1:
+                # 1 argomento: usa l'argomento come label e salva l'ultima lettura (last)
                 self._store_value(args[0])
-            else:
+                
+            elif len(args) == 2:
+                # 2 argomenti: il primo è la label, il secondo è la variabile/valore
                 label = args[0]
-                val = self._resolve_value(" ".join(args[1:]))
+                val = self._resolve_value(args[1])
                 self._store_value(label, str(val))
+                
+            else:
+                # 3+ argomenti: L'utente ha scritto troppe parole separate da spazi senza virgolette
+                raise ValueError(
+                    "@store accetta massimo 2 argomenti (@store <etichetta> [valore]). "
+                    "Se l'etichetta contiene spazi, usa le virgolette (es: @store \"Mia Etichetta\" MIA_VAR). "
+                    "Se volevi inserire testo libero nel file CSV, usa il comando @comment."
+                )
                 
         elif cmd == "startstore":
             self.auto_store_enabled = True
@@ -993,17 +1031,34 @@ class CombinedMonitorApp(tk.Tk):
         self.bottom_tabs.pack(side="right", fill="both", expand=False)
 
         # Tab Variabili (Debugger)
+        
         var_frame = ttk.Frame(self.bottom_tabs)
         self.bottom_tabs.add(var_frame, text="Variabili")
-        self.var_tree = ttk.Treeview(var_frame, columns=("nome", "valore", "scope"), show="headings", height=8)
+
+        var_container = ttk.Frame(var_frame)
+        var_container.pack(fill="both", expand=True)
+
+        self.var_tree = ttk.Treeview(
+            var_container,
+            columns=("nome", "valore", "scope"),
+            show="headings",
+            height=8
+        )
         self.var_tree.heading("nome", text="Nome")
         self.var_tree.heading("valore", text="Valore")
         self.var_tree.heading("scope", text="Scope")
-        
+
         self.var_tree.column("nome", width=120)
         self.var_tree.column("valore", width=120)
-        self.var_tree.column("scope", width=80)
-        self.var_tree.pack(fill="both", expand=True)
+        self.var_tree.column("scope", width=120)
+
+        var_scrollbar = ttk.Scrollbar(var_container, orient="vertical", command=self.var_tree.yview)
+        self.var_tree.configure(yscrollcommand=var_scrollbar.set)
+
+        self.var_tree.pack(side="left", fill="both", expand=True)
+        var_scrollbar.pack(side="right", fill="y")
+        
+        
 
         # Tab History
         hist_frame = ttk.Frame(self.bottom_tabs)
@@ -1045,7 +1100,8 @@ class CombinedMonitorApp(tk.Tk):
         text_widget = ScrolledText(frame, font=("Consolas", 10), undo=True)
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", content)
-
+        if attach_autocomplete is not None:
+            attach_autocomplete(text_widget)
         self.notebook.add(frame, text=title)
         self.notebook.select(frame)
 

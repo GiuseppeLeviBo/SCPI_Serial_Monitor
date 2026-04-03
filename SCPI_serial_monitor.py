@@ -352,6 +352,67 @@ class App(tk.Tk):
         
         self._pump_rx_queue()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        self.macro_stop_requested = threading.Event()
+    def _build_export_script_lines(self) -> list[str]:
+        mode = self.conn_type.get()
+        timeout = float(self.timeout_s.get())
+        term = self._translate_terminator()
+
+        conn_line = self._build_conn_history_command(mode, timeout, term)
+
+        # Estrae il target dalla riga @conn
+        parts = conn_line.split()
+        target_name = parts[1] if len(parts) > 1 else "target"
+        return [
+            conn_line,
+            f"@target {target_name}",
+        ]
+    def copy_connection_script(self):
+        try:
+            lines = self._build_export_script_lines()
+            text = "\n".join(lines)
+
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()
+
+            self._append_log("Script di connessione copiato negli appunti", "INFO")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Impossibile esportare la connessione:\n{exc}")
+
+    def _execute_line(self, cmd: str, force_query: bool = False):
+        cmd = cmd.strip()
+        if not cmd:
+            return None
+
+        # Commenti
+        if cmd.startswith("#"):
+            self.rx_queue.put(("INFO", f"Commento ignorato: {cmd}"))
+            return None
+
+        # Meta-comandi DSL: preservati ma non eseguiti nel monitor interattivo
+        if cmd.startswith("@"):
+            self.rx_queue.put(("TX", cmd))
+            self.rx_queue.put((
+                "INFO",
+                "Meta comando ignorato nel monitor interattivo "
+                "(preservato per uso negli script)."
+            ))
+            return None
+
+        # Comando SCPI normale
+        self.rx_queue.put(("TX", cmd))
+
+        expect_reply = force_query or is_query_command(cmd)
+        if expect_reply:
+            reply = self.transport.query(cmd)
+            self.rx_queue.put(("RX", reply))
+            return reply
+        else:
+            self.transport.write(cmd)
+            time.sleep(self.post_write_delay)
+            return None
 
     def _build_ui(self):
         # --- TOP FRAME: Impostazioni Connessione ---
@@ -382,7 +443,8 @@ class App(tk.Tk):
         
         self.btn_disconnect = ttk.Button(conn_frame, text="Disconnetti", command=self.disconnect)
         self.btn_disconnect.grid(row=0, column=7, padx=4)
-
+        self.btn_copy_conn = ttk.Button(conn_frame, text="Copia @conn", command=self.copy_connection_script)
+        self.btn_copy_conn.grid(row=0, column=8, padx=4)
         param_frame = ttk.Frame(conn_frame)
         param_frame.grid(row=1, column=0, columnspan=8, sticky="w", pady=(10, 0))
 
@@ -483,7 +545,8 @@ class App(tk.Tk):
         ttk.Button(macro_buttons_3, text="Importa", command=self.import_macros).pack(side="left", fill="x", expand=True, padx=(0,2))
         ttk.Button(macro_buttons_3, text="Esporta", command=self.export_macros).pack(side="right", fill="x", expand=True, padx=(2,0))
         ttk.Button(right, text="Elimina Macro", command=self.delete_selected_macro).pack(fill="x", pady=(2, 0))
-
+        self.btn_stop_macro = ttk.Button(right, text="STOP Macro", command=self.stop_macro)
+        self.btn_stop_macro.pack(fill="x", pady=(6, 0))
         hist_frame = ttk.LabelFrame(right, text="History Corrente")
         hist_frame.pack(fill="both", expand=True, pady=(15, 0))
         self.history_list = tk.Listbox(hist_frame)
@@ -495,7 +558,9 @@ class App(tk.Tk):
         status_frame.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="Pronto - Disconnesso")
         ttk.Label(status_frame, textvariable=self.status_var, font=("Segoe UI", 9)).pack(side="left", padx=4)
-
+    def stop_macro(self):
+        self.macro_stop_requested.set()
+        self._append_log("Stop macro richiesto", "WARN")
     def _update_ui_state(self):
         is_conn = self.transport is not None and self.transport.is_connected
         
@@ -687,6 +752,7 @@ class App(tk.Tk):
         ttk.Button(btn_frame, text="Annulla", command=editor.destroy).pack(side="right")
 
     def run_selected_macro(self):
+        self.macro_stop_requested.clear()
         sel = self.macro_list.curselection()
         if not sel:
             messagebox.showinfo(APP_NAME, "Seleziona una macro da eseguire.")
@@ -704,24 +770,20 @@ class App(tk.Tk):
         def worker():
             self.rx_queue.put(("INFO", f"Esecuzione macro '{macro.name}'"))
             try:
-                # Lock globale sulle IO durante la MACRO
                 with self.io_lock:
                     for cmd in macro.commands:
-                        self.rx_queue.put(("TX", cmd))
-                        if is_query_command(cmd):
-                            reply = self.transport.query(cmd)
-                            self.rx_queue.put(("RX", reply))
-                        else:
-                            self.transport.write(cmd)
-                            time.sleep(self.post_write_delay)
-                self.rx_queue.put(("INFO", f"Macro '{macro.name}' completata"))
+                        if self.macro_stop_requested.is_set():
+                            self.rx_queue.put(("WARN", f"Macro '{macro.name}' interrotta dall'utente"))
+                            break
+                        self._execute_line(cmd)
+                if not self.macro_stop_requested.is_set():
+                    self.rx_queue.put(("INFO", f"Macro '{macro.name}' completata"))
             except TimeoutError as te:
                 self.rx_queue.put(("ERR", f"Timeout nella macro: {te}"))
             except Exception as exc:
                 self.rx_queue.put(("ERR", f"Macro interrotta: {exc}"))
             finally:
                 self.after(0, self._finish_command_busy)
-
         threading.Thread(target=worker, daemon=True).start()
 
     def export_macros(self):
@@ -733,27 +795,51 @@ class App(tk.Tk):
         self._append_log(f"Macro esportate in {path}", "INFO")
 
     def import_macros(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        path = filedialog.askopenfilename(
+            filetypes=[
+                ("Script SCPI", "*.scpi"),
+                ("JSON Macro", "*.json"),
+                ("Tutti i file", "*.*"),
+            ]
+        )
         if not path:
             return
+
+        p = Path(path)
+
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError("Il file deve contenere una lista JSON valida.")
-            
             imported = 0
-            for item in data:
-                if "name" in item and "commands" in item:
-                    self.macros.append(Macro(name=item["name"], commands=item["commands"]))
-                    imported += 1
-            
+
+            if p.suffix.lower() == ".scpi":
+                lines = [
+                    line.rstrip()
+                    for line in p.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                if not lines:
+                    raise ValueError("Il file .scpi è vuoto.")
+
+                macro_name = p.stem
+                self.macros.append(Macro(name=macro_name, commands=lines))
+                imported = 1
+
+            else:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if not isinstance(data, list):
+                    raise ValueError("Il file JSON deve contenere una lista valida.")
+
+                for item in data:
+                    if "name" in item and "commands" in item:
+                        self.macros.append(Macro(name=item["name"], commands=item["commands"]))
+                        imported += 1
+
             self._save_macros()
             self._refresh_macro_list()
             self._append_log(f"Importate {imported} macro da {path}", "INFO")
+
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Errore nell'importazione:\n{exc}")
             self._append_log(f"Import macro fallito: {exc}", "ERR")
-
     def delete_selected_macro(self):
         sel = self.macro_list.curselection()
         if not sel:
@@ -1073,28 +1159,28 @@ class App(tk.Tk):
         cmd = self.command_var.get().strip()
         if not cmd:
             return
+
         if self.transport is None or not self.transport.is_connected:
-            messagebox.showwarning(APP_NAME, "Nessuna connessione attiva")
-            return
+            # permettiamo comunque @ e # senza connessione?
+            if not (cmd.startswith("@") or cmd.startswith("#")):
+                messagebox.showwarning(APP_NAME, "Nessuna connessione attiva")
+                return
+
         if self.command_busy:
             self._append_log("Attendere il completamento del comando corrente", "INFO")
             return
 
         self._push_history(cmd)
-        self._append_log(cmd, "TX")
         self.command_var.set("")
         self._set_command_busy(True)
 
         def worker():
             try:
-                with self.io_lock:
-                    expect_reply = force_query or is_query_command(cmd)
-                    if expect_reply:
-                        reply = self.transport.query(cmd)
-                        self.rx_queue.put(("RX", reply))
-                    else:
-                        self.transport.write(cmd)
-                        time.sleep(self.post_write_delay)
+                if cmd.startswith("@") or cmd.startswith("#"):
+                    self._execute_line(cmd, force_query=force_query)
+                else:
+                    with self.io_lock:
+                        self._execute_line(cmd, force_query=force_query)
             except TimeoutError as te:
                 self.rx_queue.put(("ERR", str(te)))
             except Exception as exc:
@@ -1103,7 +1189,6 @@ class App(tk.Tk):
                 self.after(0, self._finish_command_busy)
 
         threading.Thread(target=worker, daemon=True).start()
-
     def on_close(self):
         self._save_settings()
         self.disconnect()
