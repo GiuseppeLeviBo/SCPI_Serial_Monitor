@@ -6,6 +6,8 @@ import re
 import contextlib
 import csv
 import shlex
+import locale
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,45 @@ APP_NAME = "SCPI Combined Monitor"
 SCRIPT_INDEX_FILE = Path.home() / ".scpi_combined_scripts.json"
 SCRIPT_DIR = Path.home() / ".scpi_macros"
 
+
+
+class Translator:
+    def __init__(self, default_lang="en"):
+        sys_lang = None
+        try:
+            # Metodo moderno e sicuro per Python 3.11+
+            # 1. Salva il locale corrente di Python (di default "C")
+            saved_locale = locale.setlocale(locale.LC_ALL, None)
+            # 2. Carica il locale di sistema (Windows/Linux)
+            locale.setlocale(locale.LC_ALL, "")
+            # 3. Leggi la lingua del sistema (es. "it_IT")
+            sys_lang = locale.getlocale()[0]
+            # 4. Ripristina il locale originale per NON rompere i float SCPI!
+            locale.setlocale(locale.LC_ALL, saved_locale)
+        except Exception:
+            pass
+
+        # Fallback ultra-sicuro tramite variabili d'ambiente
+        if not sys_lang:
+            sys_lang = os.getenv("LANG", default_lang)
+
+        self.lang = sys_lang[:2].lower() if sys_lang else default_lang
+        
+        self.dict = {}
+        try:
+            with open("locales.json", "r", encoding="utf-8") as f:
+                self.dict = json.load(f)
+            # Se la lingua di sistema non è nel JSON, usa il default
+            if self.lang not in self.dict:
+                self.lang = default_lang
+        except Exception:
+            pass # Fallback silenzioso ai testi hardcoded nel codice
+
+    def __call__(self, key: str, fallback: str) -> str:
+        return self.dict.get(self.lang, {}).get(key, fallback)
+
+# Istanza globale
+_tr = Translator(default_lang="en")
 
 @dataclass
 class TargetConnection:
@@ -973,9 +1014,9 @@ class CombinedMonitorApp(tk.Tk):
         sidebar = ttk.Frame(main_paned)
         main_paned.add(sidebar, weight=1)
 
-        btn_ws = ttk.Button(sidebar, text="Apri Cartella Progetto", command=self.open_workspace)
+        btn_ws = ttk.Button(sidebar, text=_tr("btn_open_ws", "Apri Cartella Progetto"), command=self.open_workspace)
         btn_ws.pack(fill="x", pady=(0, 5))
-
+        
         # Lista dei file
         self.file_list = tk.Listbox(sidebar, font=("Consolas", 10))
         self.file_list.pack(fill="both", expand=True)
@@ -989,26 +1030,25 @@ class CombinedMonitorApp(tk.Tk):
         toolbar = ttk.Frame(main_area)
         toolbar.pack(fill="x", pady=(0, 5))
 
-        self.btn_run = ttk.Button(toolbar, text="Esegui Tab", command=self.run_script)
+        self.btn_run = ttk.Button(toolbar, text=_tr("btn_run", "Esegui Tab"), command=self.run_script)
         self.btn_run.pack(side="left", padx=(0, 4))
-        self.btn_debug = ttk.Button(toolbar, text="Debug", command=self.debug_script)
+        self.btn_debug = ttk.Button(toolbar, text=_tr("btn_debug", "Debug"), command=self.debug_script)
         self.btn_debug.pack(side="left", padx=(0, 4))
-        self.btn_stop = ttk.Button(toolbar, text="Stop", command=self.request_stop, state="disabled")
+        self.btn_stop = ttk.Button(toolbar, text=_tr("btn_stop", "Stop"), command=self.request_stop, state="disabled")
         self.btn_stop.pack(side="left", padx=(0, 15))
         
         # --- PULSANTI DEBUG ---
-        self.btn_pause = ttk.Button(toolbar, text="Pausa", command=self.toggle_pause, state="disabled")
+        self.btn_pause = ttk.Button(toolbar, text=_tr("btn_pause", "Pausa"), command=self.toggle_pause, state="disabled")
         self.btn_pause.pack(side="left", padx=(0, 4))
-        self.btn_step = ttk.Button(toolbar, text="Step", command=self.step_script, state="disabled")
+        self.btn_step = ttk.Button(toolbar, text=_tr("btn_step", "Step"), command=self.step_script, state="disabled")
         self.btn_step.pack(side="left", padx=(0, 15))
 
-        ttk.Button(toolbar, text="Nuovo", command=self.new_tab).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text="Salva", command=self.save_current_tab).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text="Chiudi Tab", command=self.close_current_tab).pack(side="left", padx=(0, 15))
+        ttk.Button(toolbar, text=_tr("btn_new", "Nuovo"), command=self.new_tab).pack(side="left", padx=(0, 4))
+        ttk.Button(toolbar, text=_tr("btn_save", "Salva"), command=self.save_current_tab).pack(side="left", padx=(0, 4))
+        ttk.Button(toolbar, text=_tr("btn_close_tab", "Chiudi Tab"), command=self.close_current_tab).pack(side="left", padx=(0, 15))
 
-        ttk.Button(toolbar, text="Chiudi Connessioni", command=self.close_connections).pack(side="right", padx=(4, 0))
-        ttk.Button(toolbar, text="Pulisci Log", command=self.clear_log).pack(side="right")
-
+        ttk.Button(toolbar, text=_tr("btn_close_conn", "Chiudi Connessioni"), command=self.close_connections).pack(side="right", padx=(4, 0))
+        ttk.Button(toolbar, text=_tr("btn_clear_log", "Pulisci Log"), command=self.clear_log).pack(side="right")
         # Splitter verticale per i Tab e il Pannello Inferiore
         right_paned = ttk.PanedWindow(main_area, orient=tk.VERTICAL)
         right_paned.pack(fill="both", expand=True)
@@ -1021,7 +1061,7 @@ class CombinedMonitorApp(tk.Tk):
         bottom_frame = ttk.Frame(right_paned)
         right_paned.add(bottom_frame, weight=1)
 
-        log_frame = ttk.LabelFrame(bottom_frame, text="Monitor Log", padding=5)
+        log_frame = ttk.LabelFrame(bottom_frame, text=_tr("tab_log", "Monitor Log"), padding=5)
         log_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
         self.log = ScrolledText(log_frame, wrap="word", font=("Consolas", 10), state="disabled")
         self.log.pack(fill="both", expand=True)
@@ -1033,7 +1073,7 @@ class CombinedMonitorApp(tk.Tk):
         # Tab Variabili (Debugger)
         
         var_frame = ttk.Frame(self.bottom_tabs)
-        self.bottom_tabs.add(var_frame, text="Variabili")
+        self.bottom_tabs.add(var_frame, text=_tr("tab_vars", "Variabili"))
 
         var_container = ttk.Frame(var_frame)
         var_container.pack(fill="both", expand=True)
@@ -1044,9 +1084,9 @@ class CombinedMonitorApp(tk.Tk):
             show="headings",
             height=8
         )
-        self.var_tree.heading("nome", text="Nome")
-        self.var_tree.heading("valore", text="Valore")
-        self.var_tree.heading("scope", text="Scope")
+        self.var_tree.heading("nome", text=_tr("col_name", "Nome"))
+        self.var_tree.heading("valore", text=_tr("col_val", "Valore"))
+        self.var_tree.heading("scope", text=_tr("col_scope", "Scope"))
 
         self.var_tree.column("nome", width=120)
         self.var_tree.column("valore", width=120)
@@ -1068,16 +1108,16 @@ class CombinedMonitorApp(tk.Tk):
         self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
 
         # Crea un tab iniziale di default
-        self.new_tab(title="Senza Nome", content="# Inserisci comandi SCPI qui\n")
+        self.new_tab(title=_tr("default_tab_title", "Senza Nome"), content=_tr("default_script_content", "# Inserisci comandi SCPI qui\n"))
 
     # ------------------ GESTIONE WORKSPACE E TAB ------------------
     def open_workspace(self):
-        folder = filedialog.askdirectory(parent=self, title="Seleziona Cartella Progetto")
+        folder = filedialog.askdirectory(parent=self, title=_tr("dialog_sel_ws", "Seleziona Cartella Progetto"))
         if not folder:
             return
         self.current_workspace = Path(folder)
         self.title(f"{APP_NAME} - {self.current_workspace.name}")
-        self._append_log("INFO", f"Progetto aperto: {self.current_workspace}")
+        self._append_log("INFO", f"{_tr('msg_ws_opened', 'Progetto aperto:')} {self.current_workspace}")
         self.refresh_file_list()
 
     def refresh_file_list(self):
@@ -1119,9 +1159,9 @@ class CombinedMonitorApp(tk.Tk):
         try:
             content = filepath.read_text(encoding="utf-8")
             self.new_tab(title=filepath.name, content=content, filepath=filepath)
-            self._append_log("INFO", f"Script caricato: {filepath.name}")
+            self._append_log("INFO", f"{_tr('msg_script_loaded', 'Script caricato:')} {filepath.name}")
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Impossibile aprire il file:\n{exc}")
+            messagebox.showerror(APP_NAME, f"{_tr('msg_err_open', 'Impossibile aprire il file:\\n')}{exc}")
 
     def get_current_tab_data(self) -> Optional[dict]:
         tab_id = self.notebook.select()
@@ -1143,9 +1183,9 @@ class CombinedMonitorApp(tk.Tk):
         content = tab_data["text_widget"].get("1.0", "end-1c")
         try:
             tab_data["path"].write_text(content, encoding="utf-8")
-            self._append_log("INFO", f"Salvato: {tab_data['path'].name}")
+            self._append_log("INFO", f"{_tr('msg_saved', 'Salvato:')} {tab_data['path'].name}")
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Impossibile salvare:\n{exc}")
+            messagebox.showerror(APP_NAME, f"{_tr('msg_err_save', 'Impossibile salvare:\\n')}{exc}")
 
     def save_tab_as(self):
         tab_data = self.get_current_tab_data()
@@ -1153,9 +1193,10 @@ class CombinedMonitorApp(tk.Tk):
 
         initial_dir = self.current_workspace if self.current_workspace else str(Path.home())
         filepath = filedialog.asksaveasfilename(
-            parent=self, title="Salva Script Come",
+            parent=self, 
+            title=_tr("dialog_save_as", "Salva Script Come"),
             defaultextension=".scpi",
-            filetypes=[("Script SCPI", "*.scpi"), ("Tutti i file", "*.*")],
+            filetypes=[(_tr("filter_scpi", "Script SCPI"), "*.scpi"), (_tr("filter_all", "Tutti i file"), "*.*")],
             initialdir=initial_dir
         )
         if not filepath: return
@@ -1167,7 +1208,7 @@ class CombinedMonitorApp(tk.Tk):
             tab_data["path"] = path
             tab_id = self.notebook.select()
             self.notebook.tab(tab_id, text=path.name)
-            self._append_log("INFO", f"Salvato come: {path.name}")
+            self._append_log("INFO", f"{_tr('msg_saved_as', 'Salvato come:')} {path.name}")
             if self.current_workspace and str(path).startswith(str(self.current_workspace)):
                 self.refresh_file_list()
         except Exception as exc:
@@ -1250,14 +1291,14 @@ class CombinedMonitorApp(tk.Tk):
             self.engine.step_event.set()
             self.btn_pause.config(text="Pausa")
             self.btn_step.state(["disabled"])
-            self._append_log("INFO", "Esecuzione ripresa (RUN)...")
+            self._append_log("INFO", _tr("msg_resumed", "Esecuzione ripresa (RUN)..."))
         else:
             # Metti in Pausa
             self.engine.step_mode = True
             self.engine.step_event.clear()
-            self.btn_pause.config(text="Riprendi")
+            self.btn_pause.config(text=_tr("btn_resume", "Riprendi"))
             self.btn_step.state(["!disabled"])
-            self._append_log("INFO", "In pausa. Usa Step per avanzare.")
+            self._append_log("INFO", _tr("msg_paused", "In pausa. Usa Step per avanzare."))
 
     def step_script(self):
         if self.engine.step_mode:
@@ -1285,9 +1326,9 @@ class CombinedMonitorApp(tk.Tk):
         def worker():
             try:
                 self.engine.run_lines(lines, entry_script_name=script_name)
-                self._append_log("INFO", "Script completato")
+                self._append_log("INFO", _tr("msg_completed", "Script completato"))
             except Exception as exc:
-                self._append_log("ERR", f"Script terminato con errore: {exc}")
+                self._append_log("ERR", f"{_tr('msg_err_term', 'Script terminato con errore:')} {exc}")
             finally:
                 self.after(0, lambda: self._set_running(False))
 
@@ -1297,7 +1338,7 @@ class CombinedMonitorApp(tk.Tk):
     def request_stop(self):
         self.engine.stop_requested = True
         self.engine.step_event.set()  # Sblocca se era in pausa, sennò non si ferma!
-        self._append_log("INFO", "Stop richiesto")
+        self._append_log("INFO", _tr("msg_stop_req", "Stop richiesto"))
 
     def _set_running(self, value: bool):
         self.running = value
@@ -1316,7 +1357,7 @@ class CombinedMonitorApp(tk.Tk):
             self.btn_stop.state(["disabled"])
             self.btn_pause.state(["disabled"])
             self.btn_step.state(["disabled"])
-            self.btn_pause.config(text="Pausa")
+            self.btn_pause.config(text=_tr("btn_pause", "Pausa"))
             
             self.engine.step_mode = False # Resetta la modalità
             
@@ -1326,7 +1367,7 @@ class CombinedMonitorApp(tk.Tk):
     # ------------------ LOG E HISTORY ------------------
     def close_connections(self):
         self.engine.close_all()
-        self._append_log("INFO", "Connessioni chiuse")
+        self._append_log("INFO", _tr("msg_conn_closed", "Connessioni chiuse"))
 
     def _append_log(self, level: str, msg: str):
         self.log.configure(state="normal")
@@ -1363,7 +1404,7 @@ class CombinedMonitorApp(tk.Tk):
         event.wait() 
 
     def _show_prompt_dialog(self, msg: str, event: threading.Event):
-        messagebox.showinfo("Azione Richiesta", msg, parent=self)
+        messagebox.showinfo(_tr("dialog_action_req", "Azione Richiesta"), msg, parent=self)
         event.set()
 
 if __name__ == "__main__":
