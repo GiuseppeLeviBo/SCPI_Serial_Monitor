@@ -7,7 +7,7 @@ import contextlib
 import csv
 import shlex
 import locale
-import os
+import os,sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +32,7 @@ try:
 except Exception:
     attach_autocomplete = None
 from SCPI_serial_monitor import (
+    Translator,
     RawSocketScpiTransport,
     SerialTransport,
     VisaTransport,
@@ -44,40 +45,6 @@ SCRIPT_DIR = Path.home() / ".scpi_macros"
 
 
 
-class Translator:
-    def __init__(self, default_lang="en"):
-        sys_lang = None
-        try:
-            # Metodo moderno e sicuro per Python 3.11+
-            # 1. Salva il locale corrente di Python (di default "C")
-            saved_locale = locale.setlocale(locale.LC_ALL, None)
-            # 2. Carica il locale di sistema (Windows/Linux)
-            locale.setlocale(locale.LC_ALL, "")
-            # 3. Leggi la lingua del sistema (es. "it_IT")
-            sys_lang = locale.getlocale()[0]
-            # 4. Ripristina il locale originale per NON rompere i float SCPI!
-            locale.setlocale(locale.LC_ALL, saved_locale)
-        except Exception:
-            pass
-
-        # Fallback ultra-sicuro tramite variabili d'ambiente
-        if not sys_lang:
-            sys_lang = os.getenv("LANG", default_lang)
-
-        self.lang = sys_lang[:2].lower() if sys_lang else default_lang
-        
-        self.dict = {}
-        try:
-            with open("locales.json", "r", encoding="utf-8") as f:
-                self.dict = json.load(f)
-            # Se la lingua di sistema non è nel JSON, usa il default
-            if self.lang not in self.dict:
-                self.lang = default_lang
-        except Exception:
-            pass # Fallback silenzioso ai testi hardcoded nel codice
-
-    def __call__(self, key: str, fallback: str) -> str:
-        return self.dict.get(self.lang, {}).get(key, fallback)
 
 # Istanza globale
 _tr = Translator(default_lang="en")
@@ -103,7 +70,17 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-
+def resource_path(relative_path: str) -> str:
+    """Ottiene il percorso assoluto della risorsa, funzionante sia in dev che compilato con PyInstaller."""
+    try:
+        # PyInstaller crea una cartella temp e mette il percorso in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # Se non siamo compilati, usa la cartella dove si trova lo script Python
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        
+    return os.path.join(base_path, relative_path)
+    
 class CombinedScriptEngine:
     """Motore script vNext: Globali, Locali Statiche, Loop per-frame, Math e Debugger."""
     BUILTIN_READONLY_NAMES = {"last",  "last_command", "last_line", "last_bin", "target", "script", "time", "date", "datetime", "csvname", "binname"}
@@ -765,6 +742,7 @@ class CombinedMonitorApp(tk.Tk):
 
         ttk.Button(toolbar, text=_tr("btn_new", "Nuovo"), command=self.new_tab).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text=_tr("btn_save", "Salva"), command=self.save_current_tab).pack(side="left", padx=(0, 4))
+        ttk.Button(toolbar, text=_tr("btn_save_as", "Salva Come..."), command=self.save_tab_as).pack(side="left", padx=(0, 4))
         ttk.Button(toolbar, text=_tr("btn_close_tab", "Chiudi Tab"), command=self.close_current_tab).pack(side="left", padx=(0, 15))
 
         ttk.Button(toolbar, text=_tr("btn_close_conn", "Chiudi Connessioni"), command=self.close_connections).pack(side="right", padx=(4, 0))
@@ -822,7 +800,7 @@ class CombinedMonitorApp(tk.Tk):
 
         # Tab History
         hist_frame = ttk.Frame(self.bottom_tabs)
-        self.bottom_tabs.add(hist_frame, text="History (@conn)")
+        self.bottom_tabs.add(hist_frame, text=_tr("tab_hist", "History (@conn)"))
         self.conn_history_list = tk.Listbox(hist_frame, width=45, font=("Consolas", 9))
         self.conn_history_list.pack(fill="both", expand=True)
         self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
