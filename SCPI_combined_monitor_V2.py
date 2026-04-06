@@ -285,6 +285,19 @@ class CombinedScriptEngine:
         lines, pc, nesting = frame["lines"], frame["pc"], 1
         while pc < len(lines):
             line = lines[pc].strip().lower()
+            # --- Ignora tutto se siamo in un blocco commento ---
+            if in_multiline:
+                if "***/" in line:
+                    in_multiline = False
+                pc += 1
+                continue
+                
+            if line.startswith("/***"):
+                if "***/" not in line:
+                    in_multiline = True
+                pc += 1
+                continue
+            # ---------------------------------------------------
             if not line or line.startswith("#"):
                 pc += 1; continue
             if line.startswith("@loop") or line.startswith("@while"): nesting += 1
@@ -389,6 +402,16 @@ class CombinedScriptEngine:
                 break
 
             line = raw.strip()
+            # --- NUOVO: GESTIONE COMMENTI MULTIRIGA /*** ... ***/ ---
+            if frame.get("in_multiline", False):
+                if "***/" in line:
+                    frame["in_multiline"] = False
+                continue
+            if line.startswith("/***"):
+                if "***/" not in line:
+                    frame["in_multiline"] = True
+                continue
+            # --------------------------------------------------------
             if not line or line.startswith("#"): continue
             self.last_line = line
             try:
@@ -675,6 +698,44 @@ class CombinedScriptEngine:
         else:
             transport.write(cmd)
             self.last = self.last_bin = None
+            
+            
+class ContextHelpWindow:
+
+    def __init__(self, root):
+        self.root = root
+        self.window = None
+        self.label = None
+
+    def toggle(self):
+        if self.window:
+            self.window.destroy()
+            self.window = None
+        else:
+            self.window = tk.Toplevel(self.root)
+            self.window.title(_tr("title_ctx_help", "Context Help"))
+            self.window.geometry("280x150")
+            self.window.attributes('-topmost', True) # Resta sempre in primo piano!
+            self.window.protocol("WM_DELETE_WINDOW", self.toggle)
+            
+            # Sfondo giallino classico degli help
+            frame = tk.Frame(self.window, bg="#ffffe1")
+            frame.pack(fill="both", expand=True)
+            
+            self.label = ttk.Label(frame, text=_tr("msg_ctx_idle", "Passa il mouse su un comando o un bottone..."), 
+                                   wraplength=260, justify="left", background="#ffffe1")
+            self.label.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def update(self, text: str):
+        if self.window and self.label:
+            self.label.config(text=text)
+
+    @property
+    def is_active(self):
+        return self.window is not None          
+            
+            
+            
 class CombinedMonitorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -686,7 +747,7 @@ class CombinedMonitorApp(tk.Tk):
         self.current_workspace: Optional[Path] = None
         self.open_tabs: Dict[str, dict] = {}  # Mappa tab_id -> {"path": Path, "text_widget": ScrolledText}
         self.connection_history: List[str] =[]
-
+        self.ctx_help = ContextHelpWindow(self)
         # Inizializza l'Engine
         self.engine = CombinedScriptEngine(
             self._append_log,
@@ -699,8 +760,14 @@ class CombinedMonitorApp(tk.Tk):
         
         self.run_thread: Optional[threading.Thread] = None
         self.running = False
-
+        self.script_help_cache: Dict[str, str] = {}
+        self.last_hovered_file: Optional[str] = None
         self._build_ui()
+
+    def bind_help(self, widget, text_key: str, default_text: str):
+        """Lega gli eventi del mouse per l'Help Contestuale usando la traduzione."""
+        widget.bind("<Enter>", lambda e: self.ctx_help.update(_tr(text_key, default_text)) if self.ctx_help.is_active else None, add="+")
+        widget.bind("<Leave>", lambda e: self.ctx_help.update(_tr("msg_ctx_idle", "Passa il mouse su un comando o un bottone...")) if self.ctx_help.is_active else None, add="+")
 
     def _build_ui(self):
         # Finestra divisa in due: Sidebar a sinistra, Area principale a destra
@@ -718,7 +785,9 @@ class CombinedMonitorApp(tk.Tk):
         self.file_list = tk.Listbox(sidebar, font=("Consolas", 10))
         self.file_list.pack(fill="both", expand=True)
         self.file_list.bind("<Double-1>", self._on_file_double_click)
-
+        # --- BINDING PER L'HELP CONTESTUALE DEGLI SCRIPT ---
+        self.file_list.bind("<Motion>", self._on_file_list_motion)
+        self.file_list.bind("<Leave>", lambda e: self.ctx_help.update(_tr("msg_ctx_idle", "Passa il mouse su un comando o un bottone...")) if self.ctx_help.is_active else None)
         # ==================== AREA PRINCIPALE ====================
         main_area = ttk.Frame(main_paned)
         main_paned.add(main_area, weight=4)
@@ -739,14 +808,26 @@ class CombinedMonitorApp(tk.Tk):
         self.btn_pause.pack(side="left", padx=(0, 4))
         self.btn_step = ttk.Button(toolbar, text=_tr("btn_step", "Step"), command=self.step_script, state="disabled")
         self.btn_step.pack(side="left", padx=(0, 15))
+        self.btn_new = ttk.Button(toolbar, text=_tr("btn_new", "Nuovo"), command=self.new_tab)
+        self.btn_new.pack(side="left", padx=(0, 4))
+        
+        self.btn_save = ttk.Button(toolbar, text=_tr("btn_save", "Salva"), command=self.save_current_tab)
+        self.btn_save.pack(side="left", padx=(0, 4))
+        
+        self.btn_save_as = ttk.Button(toolbar, text=_tr("btn_save_as", "Salva Come..."), command=self.save_tab_as)
+        self.btn_save_as.pack(side="left", padx=(0, 4))
+        
+        self.btn_close_tab = ttk.Button(toolbar, text=_tr("btn_close_tab", "Chiudi Tab"), command=self.close_current_tab)
+        self.btn_close_tab.pack(side="left", padx=(0, 15))
 
-        ttk.Button(toolbar, text=_tr("btn_new", "Nuovo"), command=self.new_tab).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text=_tr("btn_save", "Salva"), command=self.save_current_tab).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text=_tr("btn_save_as", "Salva Come..."), command=self.save_tab_as).pack(side="left", padx=(0, 4))
-        ttk.Button(toolbar, text=_tr("btn_close_tab", "Chiudi Tab"), command=self.close_current_tab).pack(side="left", padx=(0, 15))
-
-        ttk.Button(toolbar, text=_tr("btn_close_conn", "Chiudi Connessioni"), command=self.close_connections).pack(side="right", padx=(4, 0))
-        ttk.Button(toolbar, text=_tr("btn_clear_log", "Pulisci Log"), command=self.clear_log).pack(side="right")
+        self.btn_close_conn = ttk.Button(toolbar, text=_tr("btn_close_conn", "Chiudi Connessioni"), command=self.close_connections)
+        self.btn_close_conn.pack(side="right", padx=(4, 0))
+        
+        self.btn_clear_log = ttk.Button(toolbar, text=_tr("btn_clear_log", "Pulisci Log"), command=self.clear_log)
+        self.btn_clear_log.pack(side="right")
+        
+        self.btn_help = ttk.Button(toolbar, text="[ ? ]", width=4, command=self.ctx_help.toggle)
+        self.btn_help.pack(side="right", padx=(4, 0))
         # Splitter verticale per i Tab e il Pannello Inferiore
         right_paned = ttk.PanedWindow(main_area, orient=tk.VERTICAL)
         right_paned.pack(fill="both", expand=True)
@@ -804,9 +885,34 @@ class CombinedMonitorApp(tk.Tk):
         self.conn_history_list = tk.Listbox(hist_frame, width=45, font=("Consolas", 9))
         self.conn_history_list.pack(fill="both", expand=True)
         self.conn_history_list.bind("<Double-1>", self._insert_selected_conn_history)
-
+# --- BINDING DELL'HELP CONTESTUALE PER TUTTI I COMPONENTI ---
+        
+        # Sidebar e File
+        self.bind_help(btn_ws, "help_btn_ws", "Apre la finestra per selezionare la cartella contenente i tuoi script SCPI.")
+        self.bind_help(self.file_list, "help_file_list", "Fai doppio clic su un file per aprirlo in un nuovo tab dell'editor.")
+        
+        # Toolbar Bottoni di Controllo
+        self.bind_help(self.btn_run, "help_btn_run", "Esegue lo script nel tab attualmente visibile alla massima velocità.")
+        self.bind_help(self.btn_debug, "help_btn_debug", "Avvia lo script e lo mette immediatamente in Pausa alla riga 1 per il debug passo-passo.")
+        self.bind_help(self.btn_stop, "help_btn_stop", "Interrompe immediatamente l'esecuzione dello script in corso.")
+        self.bind_help(self.btn_pause, "help_btn_pause", "Mette in pausa o fa riprendere l'esecuzione dello script in corso.")
+        self.bind_help(self.btn_step, "help_btn_step", "Esegue la riga corrente e si ferma alla successiva (disponibile solo quando lo script è in Pausa).")
+        
+        # Toolbar File e Utility
+        self.bind_help(self.btn_new, "help_btn_new", "Crea uno script vuoto in un nuovo tab.")
+        self.bind_help(self.btn_save, "help_btn_save", "Salva le modifiche allo script corrente.")
+        self.bind_help(self.btn_save_as, "help_btn_save_as", "Salva lo script corrente in un nuovo file.")
+        self.bind_help(self.btn_close_tab, "help_btn_close_tab", "Chiude il tab attualmente visibile.")
+        self.bind_help(self.btn_close_conn, "help_btn_close_conn", "Forza la disconnessione da tutti gli strumenti SCPI attualmente aperti in background.")
+        self.bind_help(self.btn_clear_log, "help_btn_clear_log", "Svuota la finestra del Monitor Log in basso.")
+        self.bind_help(self.btn_help, "help_btn_help", "Mostra o nasconde la finestra flottante di Help Contestuale (questa finestra!).")
+        
+        # Pannelli Inferiori
+        self.bind_help(self.log, "help_log", "Mostra i messaggi di sistema, gli errori e il traffico in tempo reale verso gli strumenti (TX/RX).")
+        self.bind_help(self.var_tree, "help_var_tree", "Mostra il valore aggiornato delle variabili built-in, globali e locali statice dello script in esecuzione.")
+        self.bind_help(self.conn_history_list, "help_conn_hist", "Fai doppio clic su un comando di connessione per incollarlo direttamente nello script.")
         # Crea un tab iniziale di default
-        self.new_tab(title=_tr("default_tab_title", "Senza Nome"), content=_tr("default_script_content", "# Inserisci comandi SCPI qui\n"))
+        self.new_tab(title=_tr("default_tab_title", "Senza Nome"), content=_tr("default_script_content", "# Inserisci comandi SCPI qui\n/***\nE uno help per il tuo script\n***/"))
 
     # ------------------ GESTIONE WORKSPACE E TAB ------------------
     def open_workspace(self):
@@ -820,10 +926,31 @@ class CombinedMonitorApp(tk.Tk):
 
     def refresh_file_list(self):
         self.file_list.delete(0, tk.END)
+        self.script_help_cache.clear()
+        
         if not self.current_workspace:
             return
+            
         for file in sorted(self.current_workspace.glob("*.scpi")):
             self.file_list.insert(tk.END, file.name)
+            
+            # --- LEGGE L'HELP DELLO SCRIPT E LO METTE IN CACHE ---
+            try:
+                with open(file, "r", encoding="utf-8") as f:
+                    head = f.read(2048) # Legge solo i primi 2 KB per non appesantire
+                    
+                    # Usa le regex per estrarre il testo tra /*** e ***/
+                    match = re.search(r"/\*\*\*(.*?)\*\*\*/", head, re.DOTALL)
+                    if match:
+                        help_text = match.group(1).strip()
+                        # Limitiamo la lunghezza massima a 500 caratteri per la GUI
+                        if len(help_text) > 500:
+                            help_text = help_text[:497] + "..."
+                        self.script_help_cache[file.name] = help_text
+                    else:
+                        self.script_help_cache[file.name] = ""
+            except Exception:
+                self.script_help_cache[file.name] = ""
 
     def _on_file_double_click(self, event):
         selection = self.file_list.curselection()
@@ -833,14 +960,76 @@ class CombinedMonitorApp(tk.Tk):
         filepath = self.current_workspace / filename
         self.open_file_in_tab(filepath)
 
+                
+    def _on_file_list_motion(self, event):
+        """Gestisce il passaggio del mouse sopra i nomi dei file nella sidebar."""
+        if not self.ctx_help.is_active: 
+            return
+            
+        # Trova quale elemento della lista si trova sotto le coordinate (Y) del mouse
+        idx = self.file_list.nearest(event.y)
+        bbox = self.file_list.bbox(idx)
+        
+        if bbox:
+            y_start = bbox[1]
+            y_end = y_start + bbox[3]
+            
+            # Controlla che il mouse sia *effettivamente* sopra quell'elemento
+            if y_start <= event.y <= y_end:
+                filename = self.file_list.get(idx)
+                
+                # Aggiorna solo se ho cambiato file (evita sfarfallii)
+                if filename != self.last_hovered_file:
+                    self.last_hovered_file = filename
+                    help_txt = self.script_help_cache.get(filename, "")
+                    
+                    if help_txt:
+                        self.ctx_help.update(f"Script: {filename}\n\n{help_txt}")
+                    else:
+                        self.ctx_help.update(f"Script: {filename}\n\n" + _tr("msg_no_script_help", "Nessuna descrizione disponibile."))
+                return
+
+        # Se il mouse esce dai bordi validi dei file
+        if self.last_hovered_file is not None:
+            self.last_hovered_file = None
+            self.ctx_help.update(_tr("msg_ctx_idle", "Passa il mouse su un comando o un bottone..."))
+
+
+
+
     def new_tab(self, title="Senza Nome", content="", filepath: Optional[Path] = None):
         frame = ttk.Frame(self.notebook)
         text_widget = ScrolledText(frame, font=("Consolas", 10), undo=True)
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", content)
+        
+        # --- BINDING PER LABVIEW CONTEXT HELP SUL TESTO ---
+        def on_text_motion(event, tw=text_widget):
+            if not self.ctx_help.is_active: return
+            try:
+                # Trova la parola sotto il puntatore del mouse!
+                index = tw.index(f"@{event.x},{event.y}")
+                word = tw.get(index + " wordstart", index + " wordend").strip()
+                # Tkinter stacca la '@' dalla parola, quindi la ripeschiamo
+                if tw.get(index + " wordstart - 1c") == "@":
+                    word = "@" + word
+
+                if word in DSL_COMMAND_SPECS:
+                    spec = DSL_COMMAND_SPECS[word]
+                    self.ctx_help.update(f"Comando: {word}\n{spec.get('signature', '')}\n\n{spec.get('help', '')}")
+                elif word in BUILTIN_SYMBOL_SPECS:
+                    spec = BUILTIN_SYMBOL_SPECS[word]
+                    self.ctx_help.update(f"Built-in: {word}\n\n{spec.get('help', '')}")
+                else:
+                    self.ctx_help.update(_tr("msg_ctx_idle", "Passa il mouse su un comando o un bottone..."))
+            except Exception:
+                pass
+        
+        
         if attach_autocomplete is not None:
             attach_autocomplete(text_widget)
-        self.notebook.add(frame, text=title)
+        text_widget.bind("<Motion>", on_text_motion)
+        self.notebook.add(frame, text=title)  
         self.notebook.select(frame)
 
         tab_id = self.notebook.select()
@@ -882,6 +1071,7 @@ class CombinedMonitorApp(tk.Tk):
         try:
             tab_data["path"].write_text(content, encoding="utf-8")
             self._append_log("INFO", f"{_tr('msg_saved', 'Salvato:')} {tab_data['path'].name}")
+            self._update_single_script_cache(tab_data["path"])
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"{_tr('msg_err_save', 'Impossibile salvare:\\n')}{exc}")
 
@@ -1103,6 +1293,24 @@ class CombinedMonitorApp(tk.Tk):
     def _show_prompt_dialog(self, msg: str, event: threading.Event):
         messagebox.showinfo(_tr("dialog_action_req", "Azione Richiesta"), msg, parent=self)
         event.set()
+        
+    def _update_single_script_cache(self, filepath: Path):
+        """Aggiorna la cache dell'help testuale per un singolo file appena salvato."""
+        if not filepath or not filepath.exists(): 
+            return
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                head = f.read(2048)
+                match = re.search(r"/\*\*\*(.*?)\*\*\*/", head, re.DOTALL)
+                if match:
+                    help_text = match.group(1).strip()
+                    if len(help_text) > 500:
+                        help_text = help_text[:497] + "..."
+                    self.script_help_cache[filepath.name] = help_text
+                else:
+                    self.script_help_cache[filepath.name] = ""
+        except Exception:
+            self.script_help_cache[filepath.name] = ""
 
 if __name__ == "__main__":
     app = CombinedMonitorApp()
