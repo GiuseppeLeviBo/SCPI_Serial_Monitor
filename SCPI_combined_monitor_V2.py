@@ -283,6 +283,7 @@ class CombinedScriptEngine:
     def _skip_to_endloop(self):
         frame = self.call_stack[-1]
         lines, pc, nesting = frame["lines"], frame["pc"], 1
+        in_multiline = False
         while pc < len(lines):
             line = lines[pc].strip().lower()
             # --- Ignora tutto se siamo in un blocco commento ---
