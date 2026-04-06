@@ -9,6 +9,7 @@ This repository currently ships two applications:
 
 - **SCPI Serial Monitor** (`SCPI_serial_monitor.py`)
 - **SCPI Combined Monitor V2** (`SCPI_combined_monitor_V2.py`)
+- **SCPI Combined Monitor V3 (plugin-ready)** (`SCPI_combined_monitor_V3.py`)
 
 ![Serial Monitor screenshot](Screenshot.png)
 ![Combined Monitor V2 screenshot](Screenshot2.png)
@@ -86,6 +87,29 @@ Keys:
 - **Tab / Enter**: accept suggestion
 - **Up / Down**: navigate suggestions
 - **Esc**: close suggestion popup
+
+---
+
+## 3) SCPI Combined Monitor V3 (Advanced / Plugin)
+
+Run:
+
+```bash
+python SCPI_combined_monitor_V3.py
+```
+
+V3 preserves all V2 behavior and adds a startup plugin loader:
+
+- At launch, V3 scans `plugins/*.py`
+- Each plugin module can expose `register(engine)`
+- Plugin commands are callable in DSL (`@plot`, `@fft`, `@filter`, ...)
+- Built-in DSL commands cannot be overridden
+- Plugin specs can be injected at runtime for autocomplete via `engine.register_dsl_spec(...)`
+
+See:
+
+- `plugins/README.md`
+- `plugins/_example_plugin.py` (template, disabled by default)
 
 ---
 

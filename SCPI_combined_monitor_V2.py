@@ -660,8 +660,9 @@ class CombinedScriptEngine:
         self.logger("INFO", f"STORE: {name} [{target}]")
 
     def _store_comment(self, text: str):
-        self._append_lastres_row(self.current_target or "", "@comment", "COMMENT", text.lstrip("\r\n"))
-        self.logger("INFO", f"COMMENT salvato: {text.lstrip('\r\n')}")
+        clean_text = text.lstrip("\r\n")
+        self._append_lastres_row(self.current_target or "", "@comment", "COMMENT", clean_text)
+        self.logger("INFO", f"COMMENT salvato: {clean_text}")
 
     def _save_binary(self, filename: str):
         if self.last_bin is None: raise RuntimeError(_tr("err_no_bin_data", "Nessun dato binario (usa prima @readbin + comando)"))
@@ -1048,7 +1049,8 @@ class CombinedMonitorApp(tk.Tk):
             self.new_tab(title=filepath.name, content=content, filepath=filepath)
             self._append_log("INFO", f"{_tr('msg_script_loaded', 'Script caricato:')} {filepath.name}")
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"{_tr('msg_err_open', 'Impossibile aprire il file:\\n')}{exc}")
+            open_err_prefix = _tr("msg_err_open", "Impossibile aprire il file:\n")
+            messagebox.showerror(APP_NAME, f"{open_err_prefix}{exc}")
 
     def get_current_tab_data(self) -> Optional[dict]:
         tab_id = self.notebook.select()
@@ -1073,7 +1075,8 @@ class CombinedMonitorApp(tk.Tk):
             self._append_log("INFO", f"{_tr('msg_saved', 'Salvato:')} {tab_data['path'].name}")
             self._update_single_script_cache(tab_data["path"])
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"{_tr('msg_err_save', 'Impossibile salvare:\\n')}{exc}")
+            save_err_prefix = _tr("msg_err_save", "Impossibile salvare:\n")
+            messagebox.showerror(APP_NAME, f"{save_err_prefix}{exc}")
 
     def save_tab_as(self):
         tab_data = self.get_current_tab_data()
@@ -1315,4 +1318,3 @@ class CombinedMonitorApp(tk.Tk):
 if __name__ == "__main__":
     app = CombinedMonitorApp()
     app.mainloop()     
-
