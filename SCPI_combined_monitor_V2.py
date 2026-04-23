@@ -1,4 +1,5 @@
 import json
+import ast
 import threading
 import time
 import tkinter as tk
@@ -204,6 +205,46 @@ class CombinedScriptEngine:
         self.lastres_path = Path.cwd() / self.csvname
 
         self._math_env = {k: v for k, v in math.__dict__.items() if not k.startswith("__")}
+
+    _SAFE_EVAL_BINOPS = (
+        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow
+    )
+    _SAFE_EVAL_UNARYOPS = (ast.UAdd, ast.USub)
+
+    def _safe_eval_expr(self, expr: str, eval_env: Dict[str, Any]) -> Any:
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError as e:
+            raise ValueError(f"Sintassi non valida in @eval: {e}") from e
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Expression):
+                continue
+            if isinstance(node, ast.Constant):
+                if not isinstance(node.value, (int, float, bool)):
+                    raise ValueError("@eval supporta solo costanti numeriche/booleane")
+                continue
+            if isinstance(node, ast.Name):
+                if node.id not in eval_env:
+                    raise ValueError(f"Nome non consentito in @eval: {node.id}")
+                continue
+            if isinstance(node, ast.Call):
+                if not isinstance(node.func, ast.Name) or node.func.id not in eval_env:
+                    raise ValueError("@eval consente solo chiamate a funzioni math consentite")
+                continue
+            if isinstance(node, ast.BinOp):
+                if not isinstance(node.op, self._SAFE_EVAL_BINOPS):
+                    raise ValueError("@eval contiene un operatore non consentito")
+                continue
+            if isinstance(node, ast.UnaryOp):
+                if not isinstance(node.op, self._SAFE_EVAL_UNARYOPS):
+                    raise ValueError("@eval contiene un operatore unario non consentito")
+                continue
+            if isinstance(node, (ast.BoolOp, ast.Compare, ast.Load)):
+                continue
+            raise ValueError("@eval contiene costrutti non consentiti")
+
+        return eval(compile(tree, "<scpi-eval>", "eval"), {"__builtins__": {}}, eval_env)
 
     def reset_runtime(self):
         self.current_target = None
@@ -475,9 +516,22 @@ class CombinedScriptEngine:
             for k, v in self.global_vars.items(): eval_env[k.lower()] = v; eval_env[k.upper()] = v
             for k, v in self.local_vars.get(curr_script, {}).items(): eval_env[k.lower()] = v; eval_env[k.upper()] = v
 
-            try: res = eval(expr, eval_env)
-            except NameError as e: raise ValueError(_tr("err_eval_var_not_found", "Variabile non trovata in '{expr}': {e}").format(expr=expr, e=e))
-            except Exception as e: raise ValueError(_tr("err_eval_expr", "Errore espressione '{expr}': {e}").format(expr=expr, e=e))
+            # Inseriamo prima le globali, poi le sovrascriviamo con le locali per dare precedenza
+            for k, v in self.global_vars.items():
+                eval_env[k.lower()] = v
+                eval_env[k.upper()] = v
+            
+            if curr_script in self.local_vars:
+                for k, v in self.local_vars[curr_script].items():
+                    eval_env[k.lower()] = v
+                    eval_env[k.upper()] = v
+
+            try:
+                res = self._safe_eval_expr(expr, eval_env)
+            except NameError as e:
+                raise ValueError(f"Variabile non trovata in '{expr}': {e}")
+            except Exception as e:
+                raise ValueError(f"Errore espressione '{expr}': {e}")
 
             exists, _, scope = self._get_var(var_dest)
             if exists and scope == "global" and var_dest not in self.local_vars.get(curr_script, {}):
@@ -1108,9 +1162,20 @@ class CombinedMonitorApp(tk.Tk):
 
     def _load_script_lines_for_engine(self, script_name: str) -> List[str]:
         if not self.current_workspace:
-            raise ValueError(_tr("err_no_ws_call", "Nessun progetto aperto. Impossibile caricare '@call {script_name}'").format(script_name=script_name))
-        name = script_name if script_name.lower().endswith(".scpi") else f"{script_name}.scpi"
-        path = self.current_workspace / name
+            raise ValueError(f"Nessun progetto aperto. Impossibile caricare '@call {script_name}'")
+        name = script_name.strip()
+        if not name:
+            raise ValueError("Nome script vuoto in @call/@script")
+        if not name.lower().endswith(".scpi"):
+            name = f"{name}.scpi"
+
+        workspace = self.current_workspace.resolve()
+        path = (workspace / name).resolve()
+        try:
+            path.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError(f"Percorso script non consentito: {script_name}") from exc
+
         if not path.exists():
             raise ValueError(_tr("err_script_not_found", "Script non trovato nel progetto corrente: {path}").format(path=path))
         return path.read_text(encoding="utf-8").splitlines()
